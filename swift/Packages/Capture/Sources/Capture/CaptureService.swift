@@ -5,20 +5,37 @@ import Foundation
 
 @MainActor
 public final class CaptureService: ObservableObject {
-    @Published public private(set) var state = CaptureDashboardState()
+    @Published public private(set) var state: CaptureDashboardState
 
-    // Future seam: M2 can swap this RAM-only debug buffer for an aggregate-only
-    // pipeline without changing the tap implementation or the app-facing state model.
-    private let debugBuffer = InMemoryDebugBuffer()
+    // Future seam: this transient raw buffer stays debug-only and in-memory. Product
+    // features should read aggregateMetrics instead of depending on raw event text.
+    private let debugBuffer = InMemoryDebugBuffer(maxPreviewCharacters: 120, maxEvents: 12)
 
-    // Future seam: keep all native event tap behavior inside Capture so the app layer
-    // remains focused on presentation and workflow.
+    // Future seam: keep all native tap behavior isolated from aggregation and UI.
     private let eventTap = KeyboardEventTap()
+    private let aggregateStore = AggregateMetricsStore()
+    private let aggregator: TypingMetricsAggregator
+
     private var activationObserver: NSObjectProtocol?
+    private var backgroundObserver: NSObjectProtocol?
+    private var terminationObserver: NSObjectProtocol?
+    private var lastRuntimeNote: String?
+    private var unsavedAggregateMutations = 0
 
     public init() {
+        let persistedMetrics = aggregateStore.load()
+        self.aggregator = TypingMetricsAggregator(initialMetrics: persistedMetrics)
+        self.state = CaptureDashboardState(
+            aggregateMetrics: persistedMetrics,
+            exclusionStatus: ExclusionStatus(
+                excludedAppDisplayNames: ApplicationExclusionPolicy.excludedAppDisplayNames,
+                excludedBundleIdentifiers: ApplicationExclusionPolicy.excludedBundleIdentifiers,
+                excludedEventCount: persistedMetrics.excludedEventCount
+            )
+        )
+
         configureTapCallbacks()
-        installActivationObserver()
+        installLifecycleObservers()
         refreshPermissionState()
         startTapIfPossible()
     }
@@ -45,14 +62,15 @@ public final class CaptureService: ObservableObject {
         if state.permissionState != .granted {
             state.isPaused = false
             eventTap.uninstall()
+            lastRuntimeNote = nil
         }
 
-        refreshTapHealth(note: currentTapNote())
+        refreshDerivedStateAndHealth()
     }
 
     public func startTapIfPossible() {
         guard state.permissionState == .granted else {
-            refreshTapHealth(note: currentTapNote())
+            refreshDerivedStateAndHealth()
             return
         }
 
@@ -61,9 +79,10 @@ public final class CaptureService: ObservableObject {
             if state.isPaused {
                 eventTap.setEnabled(false)
             }
-            refreshTapHealth(note: currentTapNote())
+            refreshDerivedStateAndHealth()
         } catch {
-            refreshTapHealth(note: note(for: error))
+            lastRuntimeNote = note(for: error)
+            refreshDerivedStateAndHealth()
         }
     }
 
@@ -75,20 +94,36 @@ public final class CaptureService: ObservableObject {
         guard state.permissionState == .granted else { return }
         state.isPaused = true
         eventTap.setEnabled(false)
-        refreshTapHealth(note: currentTapNote())
+        persistAggregates(force: true)
+        refreshDerivedStateAndHealth()
     }
 
     public func resumeCapture() {
         guard state.permissionState == .granted else { return }
         state.isPaused = false
+        lastRuntimeNote = nil
         startTapIfPossible()
     }
 
-    public func resetDebugData() {
+    public func resetCaptureData() {
         debugBuffer.reset()
-        state.counters = CaptureCounters()
+        aggregator.reset()
+        state.aggregateMetrics = aggregator.metrics
+        state.exclusionStatus.excludedEventCount = 0
+        state.exclusionStatus.lastExcludedAppName = nil
         state.debugPreviewText = ""
         state.recentEvents = []
+        state.tapHealth.lastEventAt = nil
+        lastRuntimeNote = nil
+        unsavedAggregateMutations = 0
+
+        do {
+            try aggregateStore.clear()
+        } catch {
+            lastRuntimeNote = "Could not clear aggregate store: \(error.localizedDescription)"
+        }
+
+        refreshDerivedStateAndHealth()
     }
 
     private func configureTapCallbacks() {
@@ -99,11 +134,12 @@ public final class CaptureService: ObservableObject {
 
         eventTap.onTapNote = { [weak self] note in
             guard let self else { return }
-            self.refreshTapHealth(note: note)
+            self.lastRuntimeNote = note
+            self.refreshDerivedStateAndHealth()
         }
     }
 
-    private func installActivationObserver() {
+    private func installLifecycleObservers() {
         activationObserver = NotificationCenter.default.addObserver(
             forName: NSApplication.didBecomeActiveNotification,
             object: nil,
@@ -115,37 +151,116 @@ public final class CaptureService: ObservableObject {
                 self.startTapIfPossible()
             }
         }
+
+        backgroundObserver = NotificationCenter.default.addObserver(
+            forName: NSApplication.didResignActiveNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                self?.persistAggregates(force: true)
+            }
+        }
+
+        terminationObserver = NotificationCenter.default.addObserver(
+            forName: NSApplication.willTerminateNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                self?.persistAggregates(force: true)
+            }
+        }
     }
 
     private func handleObservedKeyEvent(_ observedEvent: ObservedKeyEvent) {
         guard state.permissionState == .granted else { return }
         guard !state.isPaused else { return }
 
-        state.counters.totalKeyDownEvents += 1
-        if observedEvent.isBackspace {
-            state.counters.totalBackspaces += 1
+        state.tapHealth.lastEventAt = observedEvent.timestamp
+
+        let activeApplication = ApplicationExclusionPolicy.currentFrontmostApplication()
+        if ApplicationExclusionPolicy.shouldExclude(activeApplication) {
+            aggregator.recordExcludedEvent(timestamp: observedEvent.timestamp)
+            state.aggregateMetrics = aggregator.metrics
+            state.exclusionStatus.excludedEventCount = aggregator.metrics.excludedEventCount
+            state.exclusionStatus.lastExcludedAppName = activeApplication?.displayName
+            lastRuntimeNote = "Tap is healthy, but events from \(activeApplication?.displayName ?? "this app") are currently excluded."
+            markAggregatesDirty()
+            refreshDerivedStateAndHealth()
+            return
         }
 
-        debugBuffer.append(
-            renderedValue: observedEvent.renderedValue,
-            kind: observedEvent.kind,
-            keyCode: observedEvent.keyCode,
-            timestamp: observedEvent.timestamp
+        let classifiedEvent = KeyEventNormalizer.classify(observedEvent)
+        aggregator.recordIncludedEvent(
+            token: classifiedEvent.aggregateToken,
+            isBackspace: classifiedEvent.isBackspace,
+            timestamp: classifiedEvent.timestamp
         )
 
+        debugBuffer.append(
+            renderedValue: classifiedEvent.debugRenderedValue,
+            kind: classifiedEvent.kind,
+            keyCode: classifiedEvent.keyCode,
+            timestamp: classifiedEvent.timestamp
+        )
+
+        state.aggregateMetrics = aggregator.metrics
+        state.exclusionStatus.excludedEventCount = aggregator.metrics.excludedEventCount
         state.debugPreviewText = debugBuffer.previewText
         state.recentEvents = debugBuffer.events
-        state.tapHealth.lastEventAt = observedEvent.timestamp
-        refreshTapHealth(note: currentTapNote())
+        lastRuntimeNote = nil
+        markAggregatesDirty()
+        refreshDerivedStateAndHealth()
     }
 
-    private func refreshTapHealth(note: String) {
+    private func markAggregatesDirty() {
+        unsavedAggregateMutations += 1
+        if unsavedAggregateMutations >= 20 {
+            persistAggregates(force: true)
+        }
+    }
+
+    private func persistAggregates(force: Bool) {
+        guard force || unsavedAggregateMutations > 0 else {
+            return
+        }
+
+        do {
+            try aggregateStore.save(aggregator.metrics)
+            unsavedAggregateMutations = 0
+        } catch {
+            lastRuntimeNote = "Could not persist aggregate metrics: \(error.localizedDescription)"
+        }
+    }
+
+    private func refreshDerivedStateAndHealth() {
+        state.captureActivityState = currentCaptureActivityState()
         state.tapHealth = TapHealth(
             isInstalled: eventTap.isInstalled,
             isEnabled: eventTap.isEnabled,
             lastEventAt: state.tapHealth.lastEventAt,
-            statusNote: note
+            statusNote: currentTapNote()
         )
+    }
+
+    private func currentCaptureActivityState() -> CaptureActivityState {
+        switch state.permissionState {
+        case .denied:
+            return .permissionDenied
+        case .unknown:
+            return .needsPermission
+        case .granted:
+            if state.isPaused {
+                return .paused
+            }
+
+            if eventTap.isInstalled && eventTap.isEnabled {
+                return .recording
+            }
+
+            return .tapUnavailable
+        }
     }
 
     private func currentTapNote() -> String {
@@ -154,16 +269,21 @@ public final class CaptureService: ObservableObject {
         }
 
         if !eventTap.isInstalled {
-            return "Permission granted, but the tap is not installed yet."
+            return lastRuntimeNote ?? "Permission granted, but the tap is not installed yet."
         }
 
         if !eventTap.isEnabled {
-            return state.isPaused
-                ? "Tap installed but paused."
-                : "Tap installed but currently disabled."
+            if state.isPaused {
+                return "Tap installed but paused."
+            }
+            return lastRuntimeNote ?? "Tap installed but currently disabled."
         }
 
-        return "Tap installed and listening."
+        if let lastRuntimeNote {
+            return lastRuntimeNote
+        }
+
+        return "Tap installed and listening for aggregate diagnostics."
     }
 
     private func note(for error: Error) -> String {

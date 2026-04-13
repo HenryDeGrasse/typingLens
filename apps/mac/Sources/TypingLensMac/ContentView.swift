@@ -4,12 +4,19 @@ import SwiftUI
 
 struct ContentView: View {
     @ObservedObject var captureService: CaptureService
+    @State private var isShowingDebug = false
 
-    // Future seam: the macOS app owns presentation only; later engineers can replace
-    // sections below with richer flows without moving capture code out of the package.
+    // Future seam: the macOS app owns presentation only; the aggregate state below is
+    // the product-facing source of truth for future diagnostics and coaching flows.
     private var state: CaptureDashboardState {
         captureService.state
     }
+
+    private let summaryColumns = [
+        GridItem(.flexible(minimum: 160), spacing: 16),
+        GridItem(.flexible(minimum: 160), spacing: 16),
+        GridItem(.flexible(minimum: 160), spacing: 16)
+    ]
 
     var body: some View {
         ScrollView {
@@ -17,10 +24,11 @@ struct ContentView: View {
                 heroCard
                 statusOverview
                 controlsCard
-                metricsRow
+                whatTypingLensKnowsCard
+                ngramInsightsRow
+                exclusionsCard
                 tapHealthCard
-                debugPreviewCard
-                recentEventsCard
+                debugOnlyCard
             }
             .padding(24)
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -30,10 +38,10 @@ struct ContentView: View {
     private var heroCard: some View {
         GroupBox {
             VStack(alignment: .leading, spacing: 12) {
-                Text("Typing Lens · M1 Trustable Capture Demo")
+                Text("Typing Lens · M2 Aggregate Diagnostics Prototype")
                     .font(.system(size: 28, weight: .bold))
 
-                Text("This first milestone is intentionally tiny: it asks for Input Monitoring, installs a listen-only keyboard event tap after approval, and shows live debug-only capture state. Raw captured text stays in memory only and is never written to disk by this app.")
+                Text("This iteration keeps the same listen-only keyboard permission flow, but shifts the product UI toward privacy-safer aggregates. Typing Lens now emphasizes counts, backspace density, and top n-grams instead of raw captured text. Any raw preview remains debug-only, transient, and in memory only.")
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
 
@@ -63,11 +71,15 @@ struct ContentView: View {
                 HStack(spacing: 12) {
                     StatusPill(title: "Permission", value: permissionLabel, tint: permissionTint)
                     StatusPill(title: "Capture", value: captureLabel, tint: captureTint)
-                    StatusPill(title: "Tap", value: state.tapHealth.isInstalled ? "installed" : "not installed", tint: state.tapHealth.isInstalled ? .green : .gray)
+                    StatusPill(title: "Exclusions", value: "\(state.exclusionStatus.excludedAppDisplayNames.count) apps", tint: .blue)
                 }
 
                 Text(state.guidanceText)
                     .foregroundStyle(.primary)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                Text("What this MVP keeps: aggregate typing metrics, exclusion counts, and tap health. What it does not persist: raw typed text, raw event streams, or full timing sequences.")
+                    .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
 
                 if state.permissionState == .denied {
@@ -96,13 +108,13 @@ struct ContentView: View {
                 }
                 .disabled(state.permissionState != .granted || !state.tapHealth.isInstalled)
 
-                Button("Clear Debug Buffer + Counters") {
-                    captureService.resetDebugData()
+                Button("Reset Aggregates + Debug State") {
+                    captureService.resetCaptureData()
                 }
 
                 Spacer()
 
-                Text("No disk persistence · No network activity")
+                Text("Aggregate JSON may persist locally · Raw debug preview never does")
                     .font(.callout)
                     .foregroundStyle(.secondary)
             }
@@ -110,75 +122,122 @@ struct ContentView: View {
         }
     }
 
-    private var metricsRow: some View {
-        HStack(spacing: 16) {
-            MetricCard(title: "Total keydown events", value: "\(state.counters.totalKeyDownEvents)")
-            MetricCard(title: "Total backspaces", value: "\(state.counters.totalBackspaces)")
-            MetricCard(title: "Last event", value: lastEventLabel)
+    private var whatTypingLensKnowsCard: some View {
+        GroupBox("What Typing Lens Knows") {
+            VStack(alignment: .leading, spacing: 16) {
+                Text("Typing Lens is observing typing activity to build a small aggregate profile for this MVP. The app is not trying to reconstruct full raw text in the main product UI.")
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                LazyVGrid(columns: summaryColumns, alignment: .leading, spacing: 16) {
+                    MetricCard(title: "Observed keydowns", value: "\(state.aggregateMetrics.totalKeyDownEvents)")
+                    MetricCard(title: "Backspaces", value: "\(state.aggregateMetrics.totalBackspaces)")
+                    MetricCard(title: "Backspace density", value: percentString(state.aggregateMetrics.backspaceDensity))
+                    MetricCard(title: "Excluded events", value: "\(state.aggregateMetrics.excludedEventCount)")
+                    MetricCard(title: "Last included event", value: timestampLabel(state.aggregateMetrics.lastIncludedEventAt))
+                    MetricCard(title: "Last aggregate update", value: timestampLabel(state.aggregateMetrics.lastUpdatedAt))
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
+    private var ngramInsightsRow: some View {
+        HStack(alignment: .top, spacing: 16) {
+            NGramInsightsCard(
+                title: "Top bigrams",
+                subtitle: "Counts and simple average latency between two included tokens.",
+                metrics: state.aggregateMetrics.topBigrams(limit: 6)
+            )
+
+            NGramInsightsCard(
+                title: "Top trigrams",
+                subtitle: "Counts and simple end-to-end latency across a three-token window.",
+                metrics: state.aggregateMetrics.topTrigrams(limit: 6)
+            )
+        }
+    }
+
+    private var exclusionsCard: some View {
+        GroupBox("Excluded Apps") {
+            VStack(alignment: .leading, spacing: 12) {
+                Text("First-pass hardcoded exclusions are active so obviously sensitive or misleading contexts are ignored. These events are not counted in the aggregate metrics above.")
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                Text(state.exclusionStatus.excludedAppDisplayNames.joined(separator: ", "))
+                    .font(.callout)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(12)
+                    .background(Color(nsColor: .controlBackgroundColor))
+                    .clipShape(RoundedRectangle(cornerRadius: 12))
+
+                KeyValueRow(label: "Excluded event count", value: "\(state.exclusionStatus.excludedEventCount)")
+                KeyValueRow(label: "Last excluded app", value: state.exclusionStatus.lastExcludedAppName ?? "None yet")
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
     }
 
     private var tapHealthCard: some View {
         GroupBox("Tap Health") {
             VStack(alignment: .leading, spacing: 10) {
+                KeyValueRow(label: "Capture state", value: captureLabel)
                 KeyValueRow(label: "Installed", value: state.tapHealth.isInstalled ? "Yes" : "No")
                 KeyValueRow(label: "Enabled", value: state.tapHealth.isEnabled ? "Yes" : "No")
-                KeyValueRow(label: "Last event timestamp", value: lastEventLabel)
+                KeyValueRow(label: "Last observed keydown", value: timestampLabel(state.tapHealth.lastEventAt))
                 KeyValueRow(label: "Status note", value: state.tapHealth.statusNote)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
         }
     }
 
-    private var debugPreviewCard: some View {
-        GroupBox("Debug-Only In-Memory Preview") {
-            VStack(alignment: .leading, spacing: 12) {
-                Text("This preview exists only to prove the listen-only tap is observing keys. It stays in RAM only and must not be used as a persistent log.")
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-
-                ScrollView {
-                    Text(state.debugPreviewText.isEmpty ? "No captured debug text yet." : state.debugPreviewText)
-                        .font(.system(.body, design: .monospaced))
-                        .frame(maxWidth: .infinity, minHeight: 120, alignment: .topLeading)
-                        .padding(12)
-                }
-                .background(Color(nsColor: .textBackgroundColor))
-                .clipShape(RoundedRectangle(cornerRadius: 12))
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-        }
-    }
-
-    private var recentEventsCard: some View {
-        GroupBox("Recent Captured Events") {
-            VStack(alignment: .leading, spacing: 8) {
-                if state.recentEvents.isEmpty {
-                    Text("No recent events yet. Grant access, type in another app, then come back here.")
+    private var debugOnlyCard: some View {
+        GroupBox {
+            DisclosureGroup("Debug only: transient raw preview", isExpanded: $isShowingDebug) {
+                VStack(alignment: .leading, spacing: 12) {
+                    Text("This section exists only to help local development prove the tap is observing events. It stays in RAM only, is intentionally demoted below the aggregate view, and is never persisted by the aggregate store.")
                         .foregroundStyle(.secondary)
-                } else {
-                    ForEach(state.recentEvents) { event in
-                        HStack(alignment: .top, spacing: 12) {
-                            Text(event.timestamp.formatted(date: .omitted, time: .standard))
-                                .frame(width: 110, alignment: .leading)
-                                .foregroundStyle(.secondary)
-                            Text(event.kind)
-                                .frame(width: 90, alignment: .leading)
-                                .foregroundStyle(.secondary)
-                            Text(event.renderedValue)
-                                .font(.system(.body, design: .monospaced))
-                                .frame(width: 140, alignment: .leading)
-                            Text("keyCode \(event.keyCode)")
-                                .foregroundStyle(.secondary)
-                            Spacer(minLength: 0)
-                        }
-                        .padding(.vertical, 4)
+                        .fixedSize(horizontal: false, vertical: true)
 
-                        Divider()
+                    ScrollView {
+                        Text(state.debugPreviewText.isEmpty ? "No transient debug text captured yet." : state.debugPreviewText)
+                            .font(.system(.body, design: .monospaced))
+                            .frame(maxWidth: .infinity, minHeight: 90, alignment: .topLeading)
+                            .padding(12)
+                    }
+                    .background(Color(nsColor: .textBackgroundColor))
+                    .clipShape(RoundedRectangle(cornerRadius: 12))
+
+                    VStack(alignment: .leading, spacing: 8) {
+                        if state.recentEvents.isEmpty {
+                            Text("No recent transient events yet.")
+                                .foregroundStyle(.secondary)
+                        } else {
+                            ForEach(state.recentEvents) { event in
+                                HStack(alignment: .top, spacing: 12) {
+                                    Text(event.timestamp.formatted(date: .omitted, time: .standard))
+                                        .frame(width: 110, alignment: .leading)
+                                        .foregroundStyle(.secondary)
+                                    Text(event.kind)
+                                        .frame(width: 90, alignment: .leading)
+                                        .foregroundStyle(.secondary)
+                                    Text(event.renderedValue)
+                                        .font(.system(.body, design: .monospaced))
+                                        .frame(width: 120, alignment: .leading)
+                                    Text("keyCode \(event.keyCode)")
+                                        .foregroundStyle(.secondary)
+                                    Spacer(minLength: 0)
+                                }
+                                .padding(.vertical, 3)
+
+                                Divider()
+                            }
+                        }
                     }
                 }
+                .padding(.top, 12)
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
         }
     }
 
@@ -194,10 +253,18 @@ struct ContentView: View {
     }
 
     private var captureLabel: String {
-        if state.permissionState != .granted {
-            return "waiting"
+        switch state.captureActivityState {
+        case .needsPermission:
+            return "needs permission"
+        case .permissionDenied:
+            return "permission denied"
+        case .recording:
+            return "recording"
+        case .paused:
+            return "paused"
+        case .tapUnavailable:
+            return "tap unavailable"
         }
-        return state.isPaused ? "paused" : "live"
     }
 
     private var permissionTint: Color {
@@ -212,17 +279,29 @@ struct ContentView: View {
     }
 
     private var captureTint: Color {
-        if state.permissionState != .granted {
+        switch state.captureActivityState {
+        case .needsPermission:
             return .gray
+        case .permissionDenied:
+            return .red
+        case .recording:
+            return .green
+        case .paused:
+            return .orange
+        case .tapUnavailable:
+            return .red
         }
-        return state.isPaused ? .orange : .green
     }
 
-    private var lastEventLabel: String {
-        guard let lastEventAt = state.tapHealth.lastEventAt else {
-            return "No events yet"
+    private func percentString(_ value: Double) -> String {
+        "\(String(format: "%.1f", value * 100))%"
+    }
+
+    private func timestampLabel(_ date: Date?) -> String {
+        guard let date else {
+            return "No data yet"
         }
-        return lastEventAt.formatted(date: .omitted, time: .standard)
+        return date.formatted(date: .omitted, time: .standard)
     }
 }
 
@@ -270,6 +349,51 @@ private struct MetricCard: View {
     }
 }
 
+private struct NGramInsightsCard: View {
+    let title: String
+    let subtitle: String
+    let metrics: [RankedNGramMetric]
+
+    var body: some View {
+        GroupBox(title) {
+            VStack(alignment: .leading, spacing: 12) {
+                Text(subtitle)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                if metrics.isEmpty {
+                    Text("No aggregate n-grams yet. Type in a non-excluded app to build some signal.")
+                        .foregroundStyle(.secondary)
+                } else {
+                    ForEach(metrics) { metric in
+                        HStack(alignment: .center, spacing: 12) {
+                            Text(metric.gram)
+                                .font(.system(size: 16, weight: .semibold, design: .monospaced))
+                                .frame(width: 120, alignment: .leading)
+                            Text("count \(metric.count)")
+                                .frame(width: 90, alignment: .leading)
+                                .foregroundStyle(.secondary)
+                            Text(latencyLabel(for: metric.averageLatencyMilliseconds))
+                                .foregroundStyle(.secondary)
+                            Spacer(minLength: 0)
+                        }
+                        Divider()
+                    }
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .frame(maxWidth: .infinity, alignment: .top)
+    }
+
+    private func latencyLabel(for milliseconds: Double?) -> String {
+        guard let milliseconds else {
+            return "latency n/a"
+        }
+        return String(format: "avg %.0f ms", milliseconds)
+    }
+}
+
 private struct KeyValueRow: View {
     let label: String
     let value: String
@@ -277,7 +401,7 @@ private struct KeyValueRow: View {
     var body: some View {
         HStack(alignment: .top, spacing: 12) {
             Text(label)
-                .frame(width: 150, alignment: .leading)
+                .frame(width: 170, alignment: .leading)
                 .foregroundStyle(.secondary)
             Text(value)
                 .frame(maxWidth: .infinity, alignment: .leading)

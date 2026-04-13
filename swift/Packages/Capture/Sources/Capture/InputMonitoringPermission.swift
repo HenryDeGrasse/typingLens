@@ -46,9 +46,9 @@ public enum InputMonitoringPermissionManager {
     public static func guidanceText(for state: InputMonitoringPermissionState) -> String {
         switch state {
         case .unknown:
-            return "Typing Lens only installs a listen-only keyboard tap after you grant Input Monitoring. Use the button below, then approve the app in System Settings → Privacy & Security → Input Monitoring."
+            return "Typing Lens only installs a listen-only keyboard tap after you grant Input Monitoring. The product UI focuses on aggregate typing metrics, not raw text. Use the button below, then approve the app in System Settings → Privacy & Security → Input Monitoring."
         case .granted:
-            return "Permission granted. The app can keep a debug-only in-memory preview of recent key events. Nothing captured is written to disk."
+            return "Permission granted. Typing Lens can now observe typing activity, compute aggregate metrics like backspace density and n-grams, and keep any raw debug preview in memory only."
         case .denied:
             return "Input Monitoring is currently denied. Open System Settings → Privacy & Security → Input Monitoring, enable Typing Lens, then return here. If macOS still shows the old state, quit and reopen the app once."
         }

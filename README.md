@@ -1,40 +1,63 @@
-# Typing Lens · M1 Trustable Capture Demo
+# Typing Lens · M2 Aggregate Diagnostics Prototype
 
 Typing Lens is a local-first typing coach.
 
-This repo currently contains only the first milestone: a super-bare macOS MVP that proves the app can responsibly observe keyboard activity after explicit user approval.
+This repo currently contains a small macOS prototype focused on trustable, privacy-safer typing diagnostics. The app still uses a listen-only keyboard event tap after explicit macOS approval, but the main product UI now emphasizes aggregate metrics instead of raw captured text.
 
-## What this MVP does
+## What changed from the first MVP
+
+The first milestone proved that Typing Lens could responsibly observe keyboard activity after Input Monitoring approval.
+
+This milestone upgrades that raw/debug capture demo into an **aggregate-first prototype**:
+
+- raw preview is no longer the main UI
+- the main app surface emphasizes counts, backspace density, and n-grams
+- a small exclusion policy ignores some obviously sensitive or misleading apps
+- aggregate metrics can persist locally between launches
+- any raw preview remains debug-only, transient, and in memory only
+
+## What this prototype does
 
 - shows a pre-permission explainer UI
 - requests/guides Input Monitoring approval
-- displays permission state: `unknown`, `granted`, or `denied`
 - installs a listen-only `CGEventTap` only after permission is granted
-- shows live counters for:
-  - total keydown events
+- shows clearer capture states:
+  - needs permission
+  - permission denied
+  - recording
+  - paused
+  - tap unavailable
+- shows privacy-safer aggregate metrics:
+  - total observed keydowns
   - total backspaces
-- shows tap health:
-  - installed or not
-  - enabled or not
-  - last event timestamp
+  - backspace density
+  - top bigrams
+  - top trigrams
+  - simple average latency for bigrams/trigrams
+  - last included event time
+  - last aggregate update time
 - supports pause/resume
-- supports clearing the in-memory debug buffer and counters
-- keeps a rolling debug-only preview of recent captured keys/events **in memory only**
+- supports reset/clear
+- ignores events from a small hardcoded denylist of apps such as Terminal, iTerm, some password managers, and some remote desktop / VM apps
+- keeps a demoted debug-only raw preview in RAM only
+- optionally persists **aggregate metrics only** to a local JSON file
 
-## What this MVP does not do
+## What this prototype does not do
 
-- no disk persistence of captured text
+- no raw typed text persistence
+- no raw event-stream persistence
 - no network activity
-- no analytics/aggregation store
-- no profile, scoring, coaching, or practice loop yet
-- no web app/packages yet
+- no sync/backend/account system
+- no coaching, prescription, or practice generation yet
+- no web UI yet
 
 ## Repo structure
 
 ```text
 apps/mac/               Runnable macOS app package + app bundle metadata
 swift/Packages/Core/    Small pure shared Swift types and state models
-swift/Packages/Capture/ Permission flow, event tap, pause/resume, tap health, in-memory buffer
+swift/Packages/Capture/ Permission flow, tap management, normalization, exclusions,
+                        aggregate metrics, and local aggregate store
 packages/               Placeholder for future TypeScript/web packages
 docs/                   Vision, ownership lanes, and roadmap
 scripts/                Local build/run helpers
@@ -55,10 +78,11 @@ From the repo root:
 
 That script will:
 
-1. build the Swift package at `apps/mac/`
-2. bundle it into `apps/mac/build/TypingLens.app`
-3. ad-hoc sign the bundle
-4. open the app
+1. clean the local Swift package build artifacts for a reliable local rebuild
+2. build the Swift package at `apps/mac/`
+3. bundle it into `apps/mac/build/TypingLens.app`
+4. ad-hoc sign the bundle
+5. open the app
 
 If you only want to build:
 
@@ -76,26 +100,56 @@ If you only want to build:
 5. Return to the app and click **Re-check Access**.
 6. Confirm the UI shows:
    - permission = `granted`
-   - tap = `installed`
-   - capture = `live`
-7. Put another app in front, type a few keys, then come back to Typing Lens.
-8. Confirm these change live/in-session:
-   - total keydown events
-   - total backspaces
-   - last event timestamp
-   - debug-only in-memory preview
-   - recent captured events list
-9. Click **Pause Capture** and verify typing no longer changes counters.
-10. Click **Resume Capture** and verify counts start moving again.
-11. Click **Clear Debug Buffer + Counters** and verify preview/counters reset.
+   - capture = `recording`
+   - tap = installed/enabled
+7. Open a non-excluded app such as TextEdit or Notes.
+8. Type a short sentence and use backspace a few times.
+9. Return to Typing Lens and confirm these update:
+   - observed keydowns
+   - backspaces
+   - backspace density
+   - top bigrams
+   - top trigrams
+   - last included event time
+   - last aggregate update time
+10. Open Terminal and type a few keys.
+11. Return to Typing Lens and confirm:
+   - total observed keydowns did **not** increase from those Terminal keystrokes
+   - excluded event count increased
+12. Click **Pause Capture** and verify typing in TextEdit or Notes no longer changes aggregates.
+13. Click **Resume Capture** and verify aggregates start moving again.
+14. Click **Reset Aggregates + Debug State** and verify aggregates/debug state are cleared.
+15. Optional persistence check:
+    - inspect `~/Library/Application Support/ai.gauntlet.typinglens/aggregate-metrics.json`
+    - confirm it contains aggregate counts / n-gram dictionaries only
+    - confirm it does **not** contain the raw debug preview or full typed text
 
-## Important privacy limitations
+## Privacy and storage notes
 
-- The debug preview contains raw captured characters for this milestone.
-- That preview is intentionally kept in RAM only.
-- The app writes no captured text to disk.
-- The app sends no captured text over the network.
-- The app does not log captured text to console output.
+- The product-facing UI is aggregate-first.
+- A raw debug preview still exists only for local development validation.
+- That debug preview stays in memory only.
+- The app does **not** write raw typed text to disk.
+- The app does **not** write raw event streams to disk.
+- The app does **not** send captured data over the network.
+- The local JSON store is aggregate-only and meant to keep this prototype small.
+
+## Current exclusions
+
+The app currently ignores a first-pass hardcoded set of bundle IDs including:
+
+- Terminal
+- iTerm
+- 1Password
+- Bitwarden
+- LastPass
+- Microsoft Remote Desktop
+- Parallels Desktop
+- VMware Fusion
+- TeamViewer
+- AnyDesk
+
+This list is intentionally small and incomplete. It is only an MVP trust/safety step.
 
 ## Development caveat
 
@@ -110,6 +164,6 @@ If permission appears stuck:
 
 ## Current milestone
 
-- **M1:** trustable capture demo
+- **M2:** aggregate diagnostics prototype
 
 See `docs/vision.md`, `docs/ownership.md`, and `docs/roadmap.md` for the intended longer-term direction.

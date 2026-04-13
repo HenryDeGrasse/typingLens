@@ -8,6 +8,7 @@ struct ObservedKeyEvent {
     let kind: String
     let renderedValue: String
     let isBackspace: Bool
+    let flags: CGEventFlags
 }
 
 enum KeyboardEventTapError: Error {
@@ -131,7 +132,8 @@ private extension ObservedKeyEvent {
             keyCode: keyCode,
             kind: kind,
             renderedValue: rawValue,
-            isBackspace: keyCode == 51
+            isBackspace: keyCode == 51,
+            flags: event.flags
         )
     }
 }

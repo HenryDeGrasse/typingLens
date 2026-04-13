@@ -6,6 +6,7 @@ APP_DIR="$ROOT_DIR/apps/mac"
 BUNDLE_DIR="$APP_DIR/build/TypingLens.app"
 
 pushd "$APP_DIR" >/dev/null
+swift package clean
 swift build -c debug --product TypingLensMac
 BIN_DIR="$(swift build -c debug --show-bin-path)"
 popd >/dev/null

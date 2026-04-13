@@ -2,4 +2,4 @@
 
 Typing Lens is a local-first typing coach.
 
-This milestone is only the trustable capture demo: prove the app can responsibly observe keyboard activity with explicit macOS permission, show live state, and keep debug capture in memory only.
+This milestone is the trustable aggregate diagnostics prototype: observe typing with explicit macOS permission, emphasize aggregate metrics instead of raw text, and keep any raw preview debug-only and in memory only.
