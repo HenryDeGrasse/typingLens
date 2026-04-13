@@ -5,6 +5,7 @@ import SwiftUI
 struct ContentView: View {
     @ObservedObject var captureService: CaptureService
     @State private var isShowingDebug = false
+    @State private var manualBundleIdentifier = ""
 
     // Future seam: the macOS app owns presentation only; the aggregate state below is
     // the product-facing source of truth for future diagnostics and coaching flows.
@@ -160,17 +161,80 @@ struct ContentView: View {
 
     private var exclusionsCard: some View {
         GroupBox("Excluded Apps") {
-            VStack(alignment: .leading, spacing: 12) {
-                Text("First-pass hardcoded exclusions are active so obviously sensitive or misleading contexts are ignored. These events are not counted in the aggregate metrics above.")
+            VStack(alignment: .leading, spacing: 16) {
+                Text("Built-in exclusions still protect obvious defaults like Terminal and some password / remote desktop tools. You can now add your own manual exclusions by bundle ID or from the last app Typing Lens observed.")
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
 
-                Text(state.exclusionStatus.excludedAppDisplayNames.joined(separator: ", "))
-                    .font(.callout)
+                if let note = state.exclusionStatus.note {
+                    Text(note)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(12)
+                        .background(Color.blue.opacity(0.12))
+                        .clipShape(RoundedRectangle(cornerRadius: 12))
+                }
+
+                GroupBox("Add Manual Exclusions") {
+                    VStack(alignment: .leading, spacing: 12) {
+                        Text("The easiest path is: type in another app, return here, and add the last observed app. If needed, you can also paste a bundle identifier manually.")
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+
+                        KeyValueRow(
+                            label: "Last observed app",
+                            value: state.exclusionStatus.lastObservedApplication?.displayName ?? "No recent app observed yet"
+                        )
+                        KeyValueRow(
+                            label: "Bundle ID",
+                            value: state.exclusionStatus.lastObservedApplication?.bundleIdentifier ?? "No bundle identifier observed yet"
+                        )
+
+                        HStack(spacing: 12) {
+                            Button("Exclude Last Observed App") {
+                                captureService.addManualExclusionFromLastObservedApp()
+                            }
+                            .disabled(
+                                state.exclusionStatus.lastObservedApplication?.bundleIdentifier == nil
+                                    || state.exclusionStatus.isLastObservedApplicationExcluded
+                            )
+
+                            if state.exclusionStatus.isLastObservedApplicationExcluded {
+                                Text("Last observed app is already excluded.")
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+
+                        HStack(spacing: 12) {
+                            TextField("com.example.app", text: $manualBundleIdentifier)
+                                .textFieldStyle(.roundedBorder)
+                                .frame(maxWidth: 320)
+                                .onSubmit(addManualBundleIdentifier)
+
+                            Button("Add Bundle ID") {
+                                addManualBundleIdentifier()
+                            }
+                            .disabled(manualBundleIdentifier.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                        }
+                    }
                     .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(12)
-                    .background(Color(nsColor: .controlBackgroundColor))
-                    .clipShape(RoundedRectangle(cornerRadius: 12))
+                }
+
+                HStack(alignment: .top, spacing: 16) {
+                    ExclusionListCard(
+                        title: "Built-in exclusions",
+                        subtitle: "Default safety list shipped with this MVP.",
+                        applications: state.exclusionStatus.builtInExcludedApplications
+                    )
+
+                    ManualExclusionListCard(
+                        title: "Manual exclusions",
+                        subtitle: "Your locally configured bundle IDs.",
+                        applications: state.exclusionStatus.manualExcludedApplications,
+                        onRemove: { application in
+                            captureService.removeManualExclusion(bundleIdentifier: application.bundleIdentifier)
+                        }
+                    )
+                }
 
                 KeyValueRow(label: "Excluded event count", value: "\(state.exclusionStatus.excludedEventCount)")
                 KeyValueRow(label: "Last excluded app", value: state.exclusionStatus.lastExcludedAppName ?? "None yet")
@@ -293,6 +357,13 @@ struct ContentView: View {
         }
     }
 
+    private func addManualBundleIdentifier() {
+        let trimmedValue = manualBundleIdentifier.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedValue.isEmpty else { return }
+        captureService.addManualExclusion(bundleIdentifier: trimmedValue)
+        manualBundleIdentifier = ""
+    }
+
     private func percentString(_ value: Double) -> String {
         "\(String(format: "%.1f", value * 100))%"
     }
@@ -391,6 +462,79 @@ private struct NGramInsightsCard: View {
             return "latency n/a"
         }
         return String(format: "avg %.0f ms", milliseconds)
+    }
+}
+
+private struct ExclusionListCard: View {
+    let title: String
+    let subtitle: String
+    let applications: [ExcludedApplication]
+
+    var body: some View {
+        GroupBox(title) {
+            VStack(alignment: .leading, spacing: 10) {
+                Text(subtitle)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                ForEach(applications) { application in
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(application.displayName)
+                            .font(.headline)
+                        Text(application.bundleIdentifier)
+                            .font(.system(.callout, design: .monospaced))
+                            .foregroundStyle(.secondary)
+                    }
+                    Divider()
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .frame(maxWidth: .infinity, alignment: .top)
+    }
+}
+
+private struct ManualExclusionListCard: View {
+    let title: String
+    let subtitle: String
+    let applications: [ExcludedApplication]
+    let onRemove: (ExcludedApplication) -> Void
+
+    var body: some View {
+        GroupBox(title) {
+            VStack(alignment: .leading, spacing: 10) {
+                Text(subtitle)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                if applications.isEmpty {
+                    Text("No manual exclusions yet.")
+                        .foregroundStyle(.secondary)
+                } else {
+                    ForEach(applications) { application in
+                        HStack(alignment: .top, spacing: 12) {
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text(application.displayName)
+                                    .font(.headline)
+                                Text(application.bundleIdentifier)
+                                    .font(.system(.callout, design: .monospaced))
+                                    .foregroundStyle(.secondary)
+                            }
+
+                            Spacer(minLength: 0)
+
+                            Button("Remove") {
+                                onRemove(application)
+                            }
+                            .buttonStyle(.borderless)
+                        }
+                        Divider()
+                    }
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .frame(maxWidth: .infinity, alignment: .top)
     }
 }
 

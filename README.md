@@ -39,6 +39,7 @@ This milestone upgrades that raw/debug capture demo into an **aggregate-first pr
 - supports pause/resume
 - supports reset/clear
 - ignores events from a small hardcoded denylist of apps such as Terminal, iTerm, some password managers, and some remote desktop / VM apps
+- lets you add and remove manual app exclusions by bundle ID or from the last observed app
 - keeps a demoted debug-only raw preview in RAM only
 - optionally persists **aggregate metrics only** to a local JSON file
 
@@ -114,12 +115,16 @@ If you only want to build:
    - last aggregate update time
 10. Open Terminal and type a few keys.
 11. Return to Typing Lens and confirm:
-   - total observed keydowns did **not** increase from those Terminal keystrokes
-   - excluded event count increased
-12. Click **Pause Capture** and verify typing in TextEdit or Notes no longer changes aggregates.
-13. Click **Resume Capture** and verify aggregates start moving again.
-14. Click **Reset Aggregates + Debug State** and verify aggregates/debug state are cleared.
-15. Optional persistence check:
+    - total observed keydowns did **not** increase from those Terminal keystrokes
+    - excluded event count increased
+12. Use the **Excluded Apps** section to:
+    - add the last observed app to manual exclusions, or
+    - enter a bundle ID manually
+13. Type in that manually excluded app and confirm its keystrokes do **not** increase the main aggregate metrics.
+14. Click **Pause Capture** and verify typing in TextEdit or Notes no longer changes aggregates.
+15. Click **Resume Capture** and verify aggregates start moving again.
+16. Click **Reset Aggregates + Debug State** and verify aggregates/debug state are cleared.
+17. Optional persistence check:
     - inspect `~/Library/Application Support/ai.gauntlet.typinglens/aggregate-metrics.json`
     - confirm it contains aggregate counts / n-gram dictionaries only
     - confirm it does **not** contain the raw debug preview or full typed text
@@ -150,6 +155,8 @@ The app currently ignores a first-pass hardcoded set of bundle IDs including:
 - AnyDesk
 
 This list is intentionally small and incomplete. It is only an MVP trust/safety step.
+
+You can also add your own exclusions locally from the app UI. Manual exclusions are stored separately from the aggregate metrics and contain app identifiers only, not captured text.
 
 ## Development caveat
 

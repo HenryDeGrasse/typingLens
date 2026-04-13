@@ -1,32 +1,36 @@
 import AppKit
+import Core
 import Foundation
 
 struct FrontmostApplicationObservation {
     let displayName: String
     let bundleIdentifier: String?
+
+    var asObservedApplication: ObservedApplication {
+        ObservedApplication(
+            displayName: displayName,
+            bundleIdentifier: bundleIdentifier
+        )
+    }
 }
 
 enum ApplicationExclusionPolicy {
-    private static let rules: [(bundleIdentifier: String, displayName: String)] = [
-        ("com.apple.Terminal", "Terminal"),
-        ("com.googlecode.iterm2", "iTerm"),
-        ("com.1password.1password", "1Password"),
-        ("com.bitwarden.desktop", "Bitwarden"),
-        ("com.lastpass.LastPass", "LastPass"),
-        ("com.microsoft.rdc.macos", "Microsoft Remote Desktop"),
-        ("com.microsoft.rdc.mac", "Microsoft Remote Desktop"),
-        ("com.parallels.desktop.console", "Parallels Desktop"),
-        ("com.vmware.fusion", "VMware Fusion"),
-        ("com.teamviewer.TeamViewer", "TeamViewer"),
-        ("com.anydesk.Anydesk", "AnyDesk")
+    static let builtInExcludedApplications: [ExcludedApplication] = [
+        ExcludedApplication(displayName: "Terminal", bundleIdentifier: "com.apple.Terminal"),
+        ExcludedApplication(displayName: "iTerm", bundleIdentifier: "com.googlecode.iterm2"),
+        ExcludedApplication(displayName: "1Password", bundleIdentifier: "com.1password.1password"),
+        ExcludedApplication(displayName: "Bitwarden", bundleIdentifier: "com.bitwarden.desktop"),
+        ExcludedApplication(displayName: "LastPass", bundleIdentifier: "com.lastpass.LastPass"),
+        ExcludedApplication(displayName: "Microsoft Remote Desktop", bundleIdentifier: "com.microsoft.rdc.macos"),
+        ExcludedApplication(displayName: "Microsoft Remote Desktop", bundleIdentifier: "com.microsoft.rdc.mac"),
+        ExcludedApplication(displayName: "Parallels Desktop", bundleIdentifier: "com.parallels.desktop.console"),
+        ExcludedApplication(displayName: "VMware Fusion", bundleIdentifier: "com.vmware.fusion"),
+        ExcludedApplication(displayName: "TeamViewer", bundleIdentifier: "com.teamviewer.TeamViewer"),
+        ExcludedApplication(displayName: "AnyDesk", bundleIdentifier: "com.anydesk.Anydesk")
     ]
 
-    static var excludedAppDisplayNames: [String] {
-        Array(Set(rules.map(\.displayName))).sorted()
-    }
-
-    static var excludedBundleIdentifiers: [String] {
-        Array(Set(rules.map(\.bundleIdentifier))).sorted()
+    private static var builtInExcludedBundleIdentifiers: Set<String> {
+        Set(builtInExcludedApplications.map(\.bundleIdentifier))
     }
 
     static func currentFrontmostApplication() -> FrontmostApplicationObservation? {
@@ -40,11 +44,19 @@ enum ApplicationExclusionPolicy {
         )
     }
 
-    static func shouldExclude(_ application: FrontmostApplicationObservation?) -> Bool {
+    static func isBuiltInExcluded(bundleIdentifier: String) -> Bool {
+        builtInExcludedBundleIdentifiers.contains(bundleIdentifier)
+    }
+
+    static func shouldExclude(
+        _ application: FrontmostApplicationObservation?,
+        manualBundleIdentifiers: Set<String>
+    ) -> Bool {
         guard let bundleIdentifier = application?.bundleIdentifier else {
             return false
         }
 
-        return rules.contains(where: { $0.bundleIdentifier == bundleIdentifier })
+        return builtInExcludedBundleIdentifiers.contains(bundleIdentifier)
+            || manualBundleIdentifiers.contains(bundleIdentifier)
     }
 }

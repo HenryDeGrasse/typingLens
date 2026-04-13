@@ -11,31 +11,41 @@ public final class CaptureService: ObservableObject {
     // features should read aggregateMetrics instead of depending on raw event text.
     private let debugBuffer = InMemoryDebugBuffer(maxPreviewCharacters: 120, maxEvents: 12)
 
-    // Future seam: keep all native tap behavior isolated from aggregation and UI.
+    // Future seam: keep native tap behavior isolated from aggregation, exclusions, and UI.
     private let eventTap = KeyboardEventTap()
     private let aggregateStore = AggregateMetricsStore()
+    private let manualExclusionStore = ManualExclusionStore()
     private let aggregator: TypingMetricsAggregator
 
+    private var manualExcludedApplications: [ExcludedApplication]
     private var activationObserver: NSObjectProtocol?
     private var backgroundObserver: NSObjectProtocol?
     private var terminationObserver: NSObjectProtocol?
     private var lastRuntimeNote: String?
+    private var exclusionNote: String?
+    private var lastObservedApplication: ObservedApplication?
+    private var lastExcludedAppName: String?
     private var unsavedAggregateMutations = 0
 
     public init() {
         let persistedMetrics = aggregateStore.load()
+        let manualExcludedApplications = manualExclusionStore.load()
+            .sorted(using: KeyPathComparator(\.displayName, comparator: .localizedStandard))
+
+        self.manualExcludedApplications = manualExcludedApplications
         self.aggregator = TypingMetricsAggregator(initialMetrics: persistedMetrics)
         self.state = CaptureDashboardState(
             aggregateMetrics: persistedMetrics,
             exclusionStatus: ExclusionStatus(
-                excludedAppDisplayNames: ApplicationExclusionPolicy.excludedAppDisplayNames,
-                excludedBundleIdentifiers: ApplicationExclusionPolicy.excludedBundleIdentifiers,
+                builtInExcludedApplications: ApplicationExclusionPolicy.builtInExcludedApplications,
+                manualExcludedApplications: manualExcludedApplications,
                 excludedEventCount: persistedMetrics.excludedEventCount
             )
         )
 
         configureTapCallbacks()
         installLifecycleObservers()
+        refreshExclusionState()
         refreshPermissionState()
         startTapIfPossible()
     }
@@ -53,6 +63,50 @@ public final class CaptureService: ObservableObject {
 
     public func openInputMonitoringSettings() {
         _ = InputMonitoringPermissionManager.openSettings()
+    }
+
+    public func addManualExclusionFromLastObservedApp() {
+        guard let lastObservedApplication else {
+            exclusionNote = "No recently observed app is available yet. Type in another app first, then come back here."
+            refreshExclusionState()
+            return
+        }
+
+        guard let bundleIdentifier = lastObservedApplication.bundleIdentifier else {
+            exclusionNote = "The last observed app does not expose a bundle identifier, so it cannot be added yet."
+            refreshExclusionState()
+            return
+        }
+
+        addManualExclusion(
+            bundleIdentifier: bundleIdentifier,
+            displayName: lastObservedApplication.displayName
+        )
+    }
+
+    public func addManualExclusion(bundleIdentifier rawValue: String) {
+        addManualExclusion(bundleIdentifier: rawValue, displayName: nil)
+    }
+
+    public func removeManualExclusion(bundleIdentifier: String) {
+        guard let removedApplication = manualExcludedApplications.first(where: { $0.bundleIdentifier == bundleIdentifier }) else {
+            exclusionNote = "That manual exclusion was not found."
+            refreshExclusionState()
+            return
+        }
+
+        let previousManualExcludedApplications = manualExcludedApplications
+        manualExcludedApplications.removeAll { $0.bundleIdentifier == bundleIdentifier }
+
+        do {
+            try persistManualExclusions()
+            exclusionNote = "Removed \(removedApplication.displayName) from manual exclusions."
+        } catch {
+            manualExcludedApplications = previousManualExcludedApplications
+            exclusionNote = "Could not save manual exclusions: \(error.localizedDescription)"
+        }
+
+        refreshExclusionState()
     }
 
     public func refreshPermissionState() {
@@ -109,12 +163,13 @@ public final class CaptureService: ObservableObject {
         debugBuffer.reset()
         aggregator.reset()
         state.aggregateMetrics = aggregator.metrics
-        state.exclusionStatus.excludedEventCount = 0
-        state.exclusionStatus.lastExcludedAppName = nil
         state.debugPreviewText = ""
         state.recentEvents = []
         state.tapHealth.lastEventAt = nil
         lastRuntimeNote = nil
+        lastObservedApplication = nil
+        lastExcludedAppName = nil
+        exclusionNote = nil
         unsavedAggregateMutations = 0
 
         do {
@@ -124,6 +179,85 @@ public final class CaptureService: ObservableObject {
         }
 
         refreshDerivedStateAndHealth()
+    }
+
+    private var manualExcludedBundleIdentifiers: Set<String> {
+        Set(manualExcludedApplications.map(\.bundleIdentifier))
+    }
+
+    private func addManualExclusion(
+        bundleIdentifier rawValue: String,
+        displayName: String?
+    ) {
+        let bundleIdentifier = rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        guard !bundleIdentifier.isEmpty else {
+            exclusionNote = "Enter a bundle identifier like com.example.app before adding a manual exclusion."
+            refreshExclusionState()
+            return
+        }
+
+        if bundleIdentifier == Bundle.main.bundleIdentifier {
+            exclusionNote = "Typing Lens cannot exclude itself from this control."
+            refreshExclusionState()
+            return
+        }
+
+        if ApplicationExclusionPolicy.isBuiltInExcluded(bundleIdentifier: bundleIdentifier) {
+            exclusionNote = "That app is already part of the built-in exclusion list."
+            refreshExclusionState()
+            return
+        }
+
+        if manualExcludedBundleIdentifiers.contains(bundleIdentifier) {
+            exclusionNote = "That bundle identifier is already in the manual exclusion list."
+            refreshExclusionState()
+            return
+        }
+
+        let excludedApplication = ExcludedApplication(
+            displayName: resolvedDisplayName(
+                for: bundleIdentifier,
+                suggestedDisplayName: displayName
+            ),
+            bundleIdentifier: bundleIdentifier
+        )
+
+        let previousManualExcludedApplications = manualExcludedApplications
+        manualExcludedApplications.append(excludedApplication)
+        manualExcludedApplications.sort(using: KeyPathComparator(\.displayName, comparator: .localizedStandard))
+
+        do {
+            try persistManualExclusions()
+            exclusionNote = "Added \(excludedApplication.displayName) to manual exclusions."
+        } catch {
+            manualExcludedApplications = previousManualExcludedApplications
+            exclusionNote = "Could not save manual exclusions: \(error.localizedDescription)"
+        }
+
+        refreshExclusionState()
+    }
+
+    private func resolvedDisplayName(
+        for bundleIdentifier: String,
+        suggestedDisplayName: String?
+    ) -> String {
+        if let suggestedDisplayName,
+           !suggestedDisplayName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return suggestedDisplayName
+        }
+
+        if let runningApplication = NSWorkspace.shared.runningApplications.first(where: { $0.bundleIdentifier == bundleIdentifier }),
+           let localizedName = runningApplication.localizedName,
+           !localizedName.isEmpty {
+            return localizedName
+        }
+
+        return bundleIdentifier
+    }
+
+    private func persistManualExclusions() throws {
+        try manualExclusionStore.save(manualExcludedApplications)
     }
 
     private func configureTapCallbacks() {
@@ -180,11 +314,15 @@ public final class CaptureService: ObservableObject {
         state.tapHealth.lastEventAt = observedEvent.timestamp
 
         let activeApplication = ApplicationExclusionPolicy.currentFrontmostApplication()
-        if ApplicationExclusionPolicy.shouldExclude(activeApplication) {
+        lastObservedApplication = activeApplication?.asObservedApplication
+
+        if ApplicationExclusionPolicy.shouldExclude(
+            activeApplication,
+            manualBundleIdentifiers: manualExcludedBundleIdentifiers
+        ) {
             aggregator.recordExcludedEvent(timestamp: observedEvent.timestamp)
             state.aggregateMetrics = aggregator.metrics
-            state.exclusionStatus.excludedEventCount = aggregator.metrics.excludedEventCount
-            state.exclusionStatus.lastExcludedAppName = activeApplication?.displayName
+            lastExcludedAppName = activeApplication?.displayName
             lastRuntimeNote = "Tap is healthy, but events from \(activeApplication?.displayName ?? "this app") are currently excluded."
             markAggregatesDirty()
             refreshDerivedStateAndHealth()
@@ -206,7 +344,6 @@ public final class CaptureService: ObservableObject {
         )
 
         state.aggregateMetrics = aggregator.metrics
-        state.exclusionStatus.excludedEventCount = aggregator.metrics.excludedEventCount
         state.debugPreviewText = debugBuffer.previewText
         state.recentEvents = debugBuffer.events
         lastRuntimeNote = nil
@@ -236,11 +373,24 @@ public final class CaptureService: ObservableObject {
 
     private func refreshDerivedStateAndHealth() {
         state.captureActivityState = currentCaptureActivityState()
+        state.aggregateMetrics = aggregator.metrics
         state.tapHealth = TapHealth(
             isInstalled: eventTap.isInstalled,
             isEnabled: eventTap.isEnabled,
             lastEventAt: state.tapHealth.lastEventAt,
             statusNote: currentTapNote()
+        )
+        refreshExclusionState()
+    }
+
+    private func refreshExclusionState() {
+        state.exclusionStatus = ExclusionStatus(
+            builtInExcludedApplications: ApplicationExclusionPolicy.builtInExcludedApplications,
+            manualExcludedApplications: manualExcludedApplications,
+            excludedEventCount: aggregator.metrics.excludedEventCount,
+            lastExcludedAppName: lastExcludedAppName,
+            lastObservedApplication: lastObservedApplication,
+            note: exclusionNote
         )
     }
 

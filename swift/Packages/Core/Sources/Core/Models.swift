@@ -157,22 +157,77 @@ public struct AggregateTypingMetrics: Equatable, Codable, Sendable {
     }
 }
 
-public struct ExclusionStatus: Equatable, Sendable {
-    public var excludedAppDisplayNames: [String]
-    public var excludedBundleIdentifiers: [String]
-    public var excludedEventCount: Int
-    public var lastExcludedAppName: String?
+public struct ObservedApplication: Identifiable, Equatable, Hashable, Sendable {
+    public var id: String {
+        bundleIdentifier ?? displayName
+    }
+
+    public let displayName: String
+    public let bundleIdentifier: String?
 
     public init(
-        excludedAppDisplayNames: [String] = [],
-        excludedBundleIdentifiers: [String] = [],
-        excludedEventCount: Int = 0,
-        lastExcludedAppName: String? = nil
+        displayName: String,
+        bundleIdentifier: String?
     ) {
-        self.excludedAppDisplayNames = excludedAppDisplayNames
-        self.excludedBundleIdentifiers = excludedBundleIdentifiers
+        self.displayName = displayName
+        self.bundleIdentifier = bundleIdentifier
+    }
+}
+
+public struct ExcludedApplication: Identifiable, Equatable, Hashable, Codable, Sendable {
+    public var id: String {
+        bundleIdentifier
+    }
+
+    public let displayName: String
+    public let bundleIdentifier: String
+
+    public init(
+        displayName: String,
+        bundleIdentifier: String
+    ) {
+        self.displayName = displayName
+        self.bundleIdentifier = bundleIdentifier
+    }
+}
+
+public struct ExclusionStatus: Equatable, Sendable {
+    public var builtInExcludedApplications: [ExcludedApplication]
+    public var manualExcludedApplications: [ExcludedApplication]
+    public var excludedEventCount: Int
+    public var lastExcludedAppName: String?
+    public var lastObservedApplication: ObservedApplication?
+    public var note: String?
+
+    public init(
+        builtInExcludedApplications: [ExcludedApplication] = [],
+        manualExcludedApplications: [ExcludedApplication] = [],
+        excludedEventCount: Int = 0,
+        lastExcludedAppName: String? = nil,
+        lastObservedApplication: ObservedApplication? = nil,
+        note: String? = nil
+    ) {
+        self.builtInExcludedApplications = builtInExcludedApplications
+        self.manualExcludedApplications = manualExcludedApplications
         self.excludedEventCount = excludedEventCount
         self.lastExcludedAppName = lastExcludedAppName
+        self.lastObservedApplication = lastObservedApplication
+        self.note = note
+    }
+
+    public var excludedAppDisplayNames: [String] {
+        Array(Set((builtInExcludedApplications + manualExcludedApplications).map(\.displayName))).sorted()
+    }
+
+    public var excludedBundleIdentifiers: [String] {
+        Array(Set((builtInExcludedApplications + manualExcludedApplications).map(\.bundleIdentifier))).sorted()
+    }
+
+    public var isLastObservedApplicationExcluded: Bool {
+        guard let bundleIdentifier = lastObservedApplication?.bundleIdentifier else {
+            return false
+        }
+        return excludedBundleIdentifiers.contains(bundleIdentifier)
     }
 }
 
