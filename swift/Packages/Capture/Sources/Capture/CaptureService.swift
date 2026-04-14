@@ -17,6 +17,7 @@ public final class CaptureService: ObservableObject {
     // Future seam: keep native capture, profile aggregation, and UI wiring separated.
     private let eventTap = KeyboardEventTap()
     private let profileEngine = TypingProfileEngine()
+    private let practiceRuntimeEngine = PracticeRuntimeEngine()
     private let advancedDiagnosticsAggregator = TypingMetricsAggregator()
     private let manualExclusionStore = ManualExclusionStore()
     private let legacyAggregateStore = AggregateMetricsStore()
@@ -26,6 +27,7 @@ public final class CaptureService: ObservableObject {
     private var backgroundObserver: NSObjectProtocol?
     private var terminationObserver: NSObjectProtocol?
     private var secureInputPollTimer: Timer?
+    private var practiceTimer: Timer?
     private var lastRuntimeNote: String?
     private var exclusionNote: String?
     private var lastObservedApplication: ObservedApplication?
@@ -43,6 +45,7 @@ public final class CaptureService: ObservableObject {
         self.state = CaptureDashboardState(
             profileSnapshot: profileEngine.currentSnapshot(),
             learningModel: LearningModelEngine.build(from: profileEngine.currentSnapshot()),
+            practiceRuntime: practiceRuntimeEngine.snapshot(),
             advancedDiagnostics: advancedDiagnosticsAggregator.metrics,
             trustState: TrustState(
                 secureInputState: .unavailable,
@@ -178,6 +181,7 @@ public final class CaptureService: ObservableObject {
     }
 
     public func resetCaptureData() {
+        clearPracticeRuntime()
         debugBuffer.reset()
         state.debugPreviewText = ""
         state.recentEvents = []
@@ -196,6 +200,59 @@ public final class CaptureService: ObservableObject {
         }
 
         advancedDiagnosticsAggregator.reset()
+        refreshDerivedStateAndHealth()
+    }
+
+    public func startRecommendedPracticeSession() {
+        guard let sessionPlan = state.learningModel.recommendedSession else {
+            return
+        }
+
+        lastRuntimeNote = nil
+        practiceRuntimeEngine.start(
+            plan: sessionPlan,
+            weakness: state.learningModel.primaryWeakness
+        )
+        startPracticeTimer()
+        refreshDerivedStateAndHealth()
+    }
+
+    public func pausePracticeSession() {
+        pausePracticeSession(reason: "Practice paused. Resume when you are ready.")
+    }
+
+    public func resumePracticeSession() {
+        lastRuntimeNote = nil
+        practiceRuntimeEngine.resume()
+        startPracticeTimer()
+        refreshDerivedStateAndHealth()
+    }
+
+    public func cancelPracticeSession() {
+        practiceRuntimeEngine.cancel()
+        stopPracticeTimer()
+        lastRuntimeNote = nil
+        refreshDerivedStateAndHealth()
+    }
+
+    public func advancePracticeBlock() {
+        practiceRuntimeEngine.advanceBlock()
+        syncPracticeTimerToRuntimeState()
+        refreshDerivedStateAndHealth()
+    }
+
+    public func skipPracticePrompt() {
+        practiceRuntimeEngine.skipPrompt()
+        refreshDerivedStateAndHealth()
+    }
+
+    public func handlePracticeCharacter(_ character: String) {
+        practiceRuntimeEngine.handleCharacter(character)
+        refreshDerivedStateAndHealth()
+    }
+
+    public func handlePracticeBackspace() {
+        practiceRuntimeEngine.handleBackspace()
         refreshDerivedStateAndHealth()
     }
 
@@ -311,6 +368,7 @@ public final class CaptureService: ObservableObject {
         ) { [weak self] _ in
             Task { @MainActor [weak self] in
                 self?.persistProfile(force: true)
+                self?.pausePracticeSession(reason: "Practice paused because Typing Lens moved to the background.")
             }
         }
 
@@ -321,6 +379,7 @@ public final class CaptureService: ObservableObject {
         ) { [weak self] _ in
             Task { @MainActor [weak self] in
                 self?.persistProfile(force: true)
+                self?.stopPracticeTimer()
             }
         }
     }
@@ -358,6 +417,13 @@ public final class CaptureService: ObservableObject {
 
         let activeApplication = ApplicationExclusionPolicy.currentFrontmostApplication()
         lastObservedApplication = activeApplication?.asObservedApplication
+
+        if activeApplication?.bundleIdentifier == Bundle.main.bundleIdentifier,
+           practiceRuntimeEngine.isActive {
+            lastRuntimeNote = "In-app practice session active. Typing Lens keystrokes are routed to the drill runtime, not the passive profile."
+            refreshDerivedStateAndHealth()
+            return
+        }
 
         let classifiedEvent = KeyEventNormalizer.classify(observedEvent)
 
@@ -424,6 +490,7 @@ public final class CaptureService: ObservableObject {
         state.captureActivityState = currentCaptureActivityState()
         state.profileSnapshot = profileEngine.currentSnapshot()
         state.learningModel = LearningModelEngine.build(from: state.profileSnapshot)
+        state.practiceRuntime = practiceRuntimeEngine.snapshot()
         state.advancedDiagnostics = advancedDiagnosticsAggregator.metrics
         state.tapHealth = TapHealth(
             isInstalled: eventTap.isInstalled,
@@ -501,6 +568,58 @@ public final class CaptureService: ObservableObject {
         }
 
         return "Tap installed and listening for local profile summaries."
+    }
+
+    private func pausePracticeSession(reason: String) {
+        practiceRuntimeEngine.pause(reason: reason)
+        stopPracticeTimer()
+        refreshDerivedStateAndHealth()
+    }
+
+    private func clearPracticeRuntime() {
+        practiceRuntimeEngine.reset()
+        stopPracticeTimer()
+        lastRuntimeNote = nil
+    }
+
+    private func startPracticeTimer() {
+        stopPracticeTimer()
+
+        guard practiceRuntimeEngine.snapshot().status == .running else {
+            return
+        }
+
+        practiceTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                self.practiceRuntimeEngine.tick()
+                self.syncPracticeTimerToRuntimeState()
+                self.refreshDerivedStateAndHealth()
+            }
+        }
+        practiceTimer?.tolerance = 0.15
+        if let practiceTimer {
+            RunLoop.main.add(practiceTimer, forMode: .common)
+        }
+    }
+
+    private func stopPracticeTimer() {
+        practiceTimer?.invalidate()
+        practiceTimer = nil
+    }
+
+    private func syncPracticeTimerToRuntimeState() {
+        switch practiceRuntimeEngine.snapshot().status {
+        case .running:
+            if practiceTimer == nil {
+                startPracticeTimer()
+            }
+        case .paused:
+            stopPracticeTimer()
+        case .idle, .completed, .canceled:
+            stopPracticeTimer()
+            lastRuntimeNote = nil
+        }
     }
 
     private func note(for error: Error) -> String {

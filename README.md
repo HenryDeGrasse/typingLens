@@ -32,7 +32,7 @@ M4 adds a deterministic interpretation layer above that profile:
   - post-check
   - transfer check
 
-The current M4 slice is still MVP-sized: it explains and prescribes, but it does not yet run a full in-app drill runtime.
+The current M4 slice is still MVP-sized: it now includes a first in-app drill runtime, but it does not yet persist structured drill history or close the full transfer loop automatically.
 
 ## What this prototype does
 
@@ -63,6 +63,11 @@ The current M4 slice is still MVP-sized: it explains and prescribes, but it does
   - learner-state summaries
   - weakness candidates
   - a recommended next practice session plan
+- runs a first in-app practice runtime with:
+  - a focus pad for transient typing prompts
+  - per-block timers
+  - prompt progression
+  - immediate block summaries
 - keeps a macOS menu bar extra for quick status/actions
 - keeps advanced literal n-gram diagnostics only as a transient, demoted section
 - keeps a raw preview only for DEBUG-only local validation
@@ -74,7 +79,7 @@ The current M4 slice is still MVP-sized: it explains and prescribes, but it does
 - no persistent literal bigram/trigram storage in the learner model
 - no network activity
 - no sync/backend/account system
-- no full interactive drill runtime yet
+- no persisted drill history / transfer result store yet
 - no AI coaching layer yet
 - no web UI yet
 
@@ -162,13 +167,21 @@ If you only want to build:
 14. Click **Pause Capture** and verify typing in TextEdit or Notes no longer changes the profile.
 15. Click **Resume Capture** and verify the profile starts moving again.
 16. Click **Reset Profile + Diagnostics** and verify profile summaries, transient diagnostics, and debug state are cleared.
-17. Open the Typing Lens icon in the macOS menu bar and confirm you can:
+17. If a recommended session is available, click **Start Recommended Session** and verify you can:
+   - type into the focus pad
+   - see the timer count down
+   - see prompts advance as you complete them
+   - pause/resume the session
+   - skip prompts or advance blocks manually
+   - finish with a visible per-block summary
+18. Confirm that practice prompt text is not written to the local JSON stores.
+19. Open the Typing Lens icon in the macOS menu bar and confirm you can:
    - see capture status at a glance
    - see the current primary weakness if one is available
    - open the main app window
    - pause/resume capture
    - exclude the last observed app
-18. Optional persistence check:
+20. Optional persistence check:
    - inspect `~/Library/Application Support/ai.gauntlet.typinglens/typing-profile-store.json`
    - inspect `~/Library/Application Support/ai.gauntlet.typinglens/manual-excluded-apps.json`
    - confirm the stores contain summary/profile data and app identifiers only

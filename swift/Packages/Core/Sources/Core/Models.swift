@@ -904,6 +904,159 @@ public struct PracticeSessionPlan: Equatable, Sendable {
     }
 }
 
+public enum PracticeRuntimeStatus: String, Codable, Sendable {
+    case idle
+    case running
+    case paused
+    case completed
+    case canceled
+}
+
+public struct PracticePrompt: Identifiable, Equatable, Sendable {
+    public let id: UUID
+    public let text: String
+    public let cue: String?
+
+    public init(
+        id: UUID = UUID(),
+        text: String,
+        cue: String? = nil
+    ) {
+        self.id = id
+        self.text = text
+        self.cue = cue
+    }
+}
+
+public struct PracticeBlockResult: Identifiable, Equatable, Sendable {
+    public let id: UUID
+    public let title: String
+    public let kind: PracticeBlockKind
+    public let drillFamily: PracticeDrillFamily?
+    public let elapsedSeconds: Int
+    public let completedPromptCount: Int
+    public let correctCharacterCount: Int
+    public let incorrectCharacterCount: Int
+    public let backspaceCount: Int
+    public let note: String
+
+    public init(
+        id: UUID = UUID(),
+        title: String,
+        kind: PracticeBlockKind,
+        drillFamily: PracticeDrillFamily?,
+        elapsedSeconds: Int,
+        completedPromptCount: Int,
+        correctCharacterCount: Int,
+        incorrectCharacterCount: Int,
+        backspaceCount: Int,
+        note: String
+    ) {
+        self.id = id
+        self.title = title
+        self.kind = kind
+        self.drillFamily = drillFamily
+        self.elapsedSeconds = elapsedSeconds
+        self.completedPromptCount = completedPromptCount
+        self.correctCharacterCount = correctCharacterCount
+        self.incorrectCharacterCount = incorrectCharacterCount
+        self.backspaceCount = backspaceCount
+        self.note = note
+    }
+
+    public var accuracy: Double {
+        let total = correctCharacterCount + incorrectCharacterCount
+        guard total > 0 else { return 0 }
+        return Double(correctCharacterCount) / Double(total)
+    }
+}
+
+public struct PracticeRuntimeSnapshot: Equatable, Sendable {
+    public var status: PracticeRuntimeStatus
+    public var sessionTitle: String?
+    public var rationale: String?
+    public var activeBlockIndex: Int?
+    public var interactiveBlockCount: Int
+    public var activeBlockTitle: String?
+    public var activeBlockKind: PracticeBlockKind?
+    public var activeBlockFamily: PracticeDrillFamily?
+    public var activeBlockDetail: String?
+    public var remainingSeconds: Int
+    public var elapsedSeconds: Int
+    public var activePrompt: PracticePrompt?
+    public var upcomingPrompts: [PracticePrompt]
+    public var typedText: String
+    public var completedPromptCount: Int
+    public var correctCharacterCount: Int
+    public var incorrectCharacterCount: Int
+    public var backspaceCount: Int
+    public var completedBlocks: [PracticeBlockResult]
+    public var followUp: String?
+    public var laterTransferNote: String?
+    public var note: String
+    public var requiresAppFocus: Bool
+
+    public init(
+        status: PracticeRuntimeStatus = .idle,
+        sessionTitle: String? = nil,
+        rationale: String? = nil,
+        activeBlockIndex: Int? = nil,
+        interactiveBlockCount: Int = 0,
+        activeBlockTitle: String? = nil,
+        activeBlockKind: PracticeBlockKind? = nil,
+        activeBlockFamily: PracticeDrillFamily? = nil,
+        activeBlockDetail: String? = nil,
+        remainingSeconds: Int = 0,
+        elapsedSeconds: Int = 0,
+        activePrompt: PracticePrompt? = nil,
+        upcomingPrompts: [PracticePrompt] = [],
+        typedText: String = "",
+        completedPromptCount: Int = 0,
+        correctCharacterCount: Int = 0,
+        incorrectCharacterCount: Int = 0,
+        backspaceCount: Int = 0,
+        completedBlocks: [PracticeBlockResult] = [],
+        followUp: String? = nil,
+        laterTransferNote: String? = nil,
+        note: String = "Start a recommended session to enter the in-app practice runtime.",
+        requiresAppFocus: Bool = false
+    ) {
+        self.status = status
+        self.sessionTitle = sessionTitle
+        self.rationale = rationale
+        self.activeBlockIndex = activeBlockIndex
+        self.interactiveBlockCount = interactiveBlockCount
+        self.activeBlockTitle = activeBlockTitle
+        self.activeBlockKind = activeBlockKind
+        self.activeBlockFamily = activeBlockFamily
+        self.activeBlockDetail = activeBlockDetail
+        self.remainingSeconds = remainingSeconds
+        self.elapsedSeconds = elapsedSeconds
+        self.activePrompt = activePrompt
+        self.upcomingPrompts = upcomingPrompts
+        self.typedText = typedText
+        self.completedPromptCount = completedPromptCount
+        self.correctCharacterCount = correctCharacterCount
+        self.incorrectCharacterCount = incorrectCharacterCount
+        self.backspaceCount = backspaceCount
+        self.completedBlocks = completedBlocks
+        self.followUp = followUp
+        self.laterTransferNote = laterTransferNote
+        self.note = note
+        self.requiresAppFocus = requiresAppFocus
+    }
+
+    public var isActive: Bool {
+        status == .running || status == .paused
+    }
+
+    public var currentAccuracy: Double {
+        let total = correctCharacterCount + incorrectCharacterCount
+        guard total > 0 else { return 0 }
+        return Double(correctCharacterCount) / Double(total)
+    }
+}
+
 public struct LearningModelSnapshot: Equatable, Sendable {
     public var skillNodes: [SkillNode]
     public var skillEdges: [SkillEdge]
@@ -936,6 +1089,7 @@ public struct CaptureDashboardState: Equatable, Sendable {
     public var tapHealth: TapHealth
     public var profileSnapshot: TypingProfileSnapshot
     public var learningModel: LearningModelSnapshot
+    public var practiceRuntime: PracticeRuntimeSnapshot
     public var advancedDiagnostics: AggregateTypingMetrics
     public var trustState: TrustState
     public var exclusionStatus: ExclusionStatus
@@ -950,6 +1104,7 @@ public struct CaptureDashboardState: Equatable, Sendable {
         tapHealth: TapHealth = TapHealth(),
         profileSnapshot: TypingProfileSnapshot = TypingProfileSnapshot(),
         learningModel: LearningModelSnapshot = LearningModelSnapshot(),
+        practiceRuntime: PracticeRuntimeSnapshot = PracticeRuntimeSnapshot(),
         advancedDiagnostics: AggregateTypingMetrics = AggregateTypingMetrics(),
         trustState: TrustState = TrustState(),
         exclusionStatus: ExclusionStatus = ExclusionStatus(),
@@ -963,6 +1118,7 @@ public struct CaptureDashboardState: Equatable, Sendable {
         self.tapHealth = tapHealth
         self.profileSnapshot = profileSnapshot
         self.learningModel = learningModel
+        self.practiceRuntime = practiceRuntime
         self.advancedDiagnostics = advancedDiagnostics
         self.trustState = trustState
         self.exclusionStatus = exclusionStatus
