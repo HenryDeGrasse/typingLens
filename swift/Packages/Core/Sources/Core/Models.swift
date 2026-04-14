@@ -11,7 +11,54 @@ public enum CaptureActivityState: String, Codable, Sendable {
     case permissionDenied
     case recording
     case paused
+    case secureInputBlocked
     case tapUnavailable
+}
+
+public enum SecureInputState: String, Codable, Sendable {
+    case unavailable
+    case disabled
+    case enabled
+}
+
+public enum KeyClass: String, Codable, CaseIterable, Sendable {
+    case letter
+    case number
+    case punctuation
+    case whitespace
+    case returnKey
+    case backspace
+    case modifier
+    case navigation
+    case other
+}
+
+public enum KeyHand: String, Codable, CaseIterable, Sendable {
+    case left
+    case right
+    case neutral
+    case unknown
+}
+
+public enum HandTransitionPattern: String, Codable, CaseIterable, Sendable {
+    case sameHand
+    case crossHand
+    case involvesNeutral
+    case unknown
+}
+
+public enum DistanceBucket: String, Codable, CaseIterable, Sendable {
+    case sameKey
+    case near
+    case medium
+    case far
+    case unknown
+}
+
+public enum ProfileConfidenceState: String, Codable, Sendable {
+    case warmingUp
+    case buildingBaseline
+    case ready
 }
 
 public struct TapHealth: Equatable, Sendable {
@@ -52,6 +99,364 @@ public struct DebugPreviewEvent: Identifiable, Equatable, Sendable {
         self.kind = kind
         self.renderedValue = renderedValue
         self.keyCode = keyCode
+    }
+}
+
+public struct DistributionHistogram: Equatable, Codable, Sendable {
+    public let boundaries: [Double]
+    public var counts: [Int]
+
+    public init(
+        boundaries: [Double],
+        counts: [Int]? = nil
+    ) {
+        self.boundaries = boundaries.sorted()
+        self.counts = counts ?? Array(repeating: 0, count: boundaries.count + 1)
+    }
+
+    public var sampleCount: Int {
+        counts.reduce(0, +)
+    }
+
+    public mutating func insert(_ value: Double) {
+        let insertionIndex = boundaries.firstIndex(where: { value <= $0 }) ?? boundaries.count
+        counts[insertionIndex] += 1
+    }
+
+    public mutating func merge(_ other: DistributionHistogram) {
+        guard boundaries == other.boundaries, counts.count == other.counts.count else {
+            return
+        }
+
+        for index in counts.indices {
+            counts[index] += other.counts[index]
+        }
+    }
+
+    public func percentile(_ percentile: Double) -> Double? {
+        guard sampleCount > 0 else { return nil }
+
+        let clampedPercentile = min(max(percentile, 0), 1)
+        let target = Int(ceil(clampedPercentile * Double(sampleCount)))
+        var runningTotal = 0
+
+        for index in counts.indices {
+            runningTotal += counts[index]
+            if runningTotal >= max(target, 1) {
+                return representativeValue(forBucketAt: index)
+            }
+        }
+
+        return representativeValue(forBucketAt: counts.indices.last ?? 0)
+    }
+
+    public var median: Double? {
+        percentile(0.5)
+    }
+
+    public var p90: Double? {
+        percentile(0.9)
+    }
+
+    public var iqr: Double? {
+        guard let q1 = percentile(0.25), let q3 = percentile(0.75) else {
+            return nil
+        }
+        return q3 - q1
+    }
+
+    public func entries() -> [HistogramEntry] {
+        counts.indices.map { index in
+            HistogramEntry(
+                label: bucketLabel(forBucketAt: index),
+                value: counts[index]
+            )
+        }
+    }
+
+    private func representativeValue(forBucketAt index: Int) -> Double {
+        if index == 0 {
+            return boundaries.first ?? 0
+        }
+
+        if index == counts.count - 1 {
+            return boundaries.last ?? 0
+        }
+
+        let lowerBound = boundaries[index - 1]
+        let upperBound = boundaries[index]
+        return (lowerBound + upperBound) / 2
+    }
+
+    private func bucketLabel(forBucketAt index: Int) -> String {
+        if boundaries.isEmpty {
+            return "0"
+        }
+
+        if index == 0 {
+            return "≤\(Int(boundaries[0]))"
+        }
+
+        if index == counts.count - 1 {
+            return ">\(Int(boundaries[index - 1]))"
+        }
+
+        return "\(Int(boundaries[index - 1]))–\(Int(boundaries[index]))"
+    }
+
+    public static func timing() -> DistributionHistogram {
+        DistributionHistogram(boundaries: [40, 60, 80, 100, 130, 160, 200, 250, 320, 400, 500, 650, 800, 1_000, 1_300, 1_600, 2_000, 2_500, 3_500])
+    }
+
+    public static func pauseTiming() -> DistributionHistogram {
+        DistributionHistogram(boundaries: [250, 500, 750, 1_000, 1_500, 2_000, 3_000, 5_000, 10_000, 30_000])
+    }
+
+    public static func burstLengths() -> DistributionHistogram {
+        DistributionHistogram(boundaries: [5, 10, 20, 30, 45, 60, 90, 120, 180])
+    }
+
+    public static func correctionBurstLengths() -> DistributionHistogram {
+        DistributionHistogram(boundaries: [1, 2, 3, 5, 8, 12, 20])
+    }
+}
+
+public struct HistogramEntry: Identifiable, Equatable, Sendable {
+    public var id: String { label }
+
+    public let label: String
+    public let value: Int
+
+    public init(label: String, value: Int) {
+        self.label = label
+        self.value = value
+    }
+}
+
+public struct TimingStatsSummary: Equatable, Sendable {
+    public let sampleCount: Int
+    public let p50Milliseconds: Double?
+    public let p90Milliseconds: Double?
+    public let iqrMilliseconds: Double?
+
+    public init(histogram: DistributionHistogram) {
+        self.sampleCount = histogram.sampleCount
+        self.p50Milliseconds = histogram.median
+        self.p90Milliseconds = histogram.p90
+        self.iqrMilliseconds = histogram.iqr
+    }
+}
+
+public struct TypingProfileSummary: Equatable, Codable, Sendable {
+    public var includedKeyDownCount: Int
+    public var printableKeyDownCount: Int
+    public var backspaceCount: Int
+    public var excludedEventCount: Int
+    public var sessionCount: Int
+    public var burstCount: Int
+    public var totalBurstKeyCount: Int
+    public var dwellHistogram: DistributionHistogram
+    public var flightHistogram: DistributionHistogram
+    public var pauseHistogram: DistributionHistogram
+    public var burstLengthHistogram: DistributionHistogram
+    public var correctionBurstHistogram: DistributionHistogram
+    public var preCorrectionFlightHistogram: DistributionHistogram
+    public var recoveryFlightHistogram: DistributionHistogram
+    public var dwellByKeyClass: [String: DistributionHistogram]
+    public var flightByHandPattern: [String: DistributionHistogram]
+    public var flightByDistanceBucket: [String: DistributionHistogram]
+    public var lastIncludedEventAt: Date?
+    public var lastUpdatedAt: Date?
+
+    public init(
+        includedKeyDownCount: Int = 0,
+        printableKeyDownCount: Int = 0,
+        backspaceCount: Int = 0,
+        excludedEventCount: Int = 0,
+        sessionCount: Int = 0,
+        burstCount: Int = 0,
+        totalBurstKeyCount: Int = 0,
+        dwellHistogram: DistributionHistogram = .timing(),
+        flightHistogram: DistributionHistogram = .timing(),
+        pauseHistogram: DistributionHistogram = .pauseTiming(),
+        burstLengthHistogram: DistributionHistogram = .burstLengths(),
+        correctionBurstHistogram: DistributionHistogram = .correctionBurstLengths(),
+        preCorrectionFlightHistogram: DistributionHistogram = .timing(),
+        recoveryFlightHistogram: DistributionHistogram = .timing(),
+        dwellByKeyClass: [String: DistributionHistogram] = [:],
+        flightByHandPattern: [String: DistributionHistogram] = [:],
+        flightByDistanceBucket: [String: DistributionHistogram] = [:],
+        lastIncludedEventAt: Date? = nil,
+        lastUpdatedAt: Date? = nil
+    ) {
+        self.includedKeyDownCount = includedKeyDownCount
+        self.printableKeyDownCount = printableKeyDownCount
+        self.backspaceCount = backspaceCount
+        self.excludedEventCount = excludedEventCount
+        self.sessionCount = sessionCount
+        self.burstCount = burstCount
+        self.totalBurstKeyCount = totalBurstKeyCount
+        self.dwellHistogram = dwellHistogram
+        self.flightHistogram = flightHistogram
+        self.pauseHistogram = pauseHistogram
+        self.burstLengthHistogram = burstLengthHistogram
+        self.correctionBurstHistogram = correctionBurstHistogram
+        self.preCorrectionFlightHistogram = preCorrectionFlightHistogram
+        self.recoveryFlightHistogram = recoveryFlightHistogram
+        self.dwellByKeyClass = dwellByKeyClass
+        self.flightByHandPattern = flightByHandPattern
+        self.flightByDistanceBucket = flightByDistanceBucket
+        self.lastIncludedEventAt = lastIncludedEventAt
+        self.lastUpdatedAt = lastUpdatedAt
+    }
+
+    public var backspaceDensity: Double {
+        guard includedKeyDownCount > 0 else { return 0 }
+        return Double(backspaceCount) / Double(includedKeyDownCount)
+    }
+
+    public var averageBurstLength: Double {
+        guard burstCount > 0 else { return 0 }
+        return Double(totalBurstKeyCount) / Double(burstCount)
+    }
+
+    public var dwellStats: TimingStatsSummary {
+        TimingStatsSummary(histogram: dwellHistogram)
+    }
+
+    public var flightStats: TimingStatsSummary {
+        TimingStatsSummary(histogram: flightHistogram)
+    }
+
+    public var pauseStats: TimingStatsSummary {
+        TimingStatsSummary(histogram: pauseHistogram)
+    }
+
+    public var preCorrectionStats: TimingStatsSummary {
+        TimingStatsSummary(histogram: preCorrectionFlightHistogram)
+    }
+
+    public var recoveryStats: TimingStatsSummary {
+        TimingStatsSummary(histogram: recoveryFlightHistogram)
+    }
+
+    public func dwellStats(for keyClass: KeyClass) -> TimingStatsSummary {
+        TimingStatsSummary(histogram: dwellByKeyClass[keyClass.rawValue, default: .timing()])
+    }
+
+    public func flightStats(for pattern: HandTransitionPattern) -> TimingStatsSummary {
+        TimingStatsSummary(histogram: flightByHandPattern[pattern.rawValue, default: .timing()])
+    }
+
+    public func flightStats(for bucket: DistanceBucket) -> TimingStatsSummary {
+        TimingStatsSummary(histogram: flightByDistanceBucket[bucket.rawValue, default: .timing()])
+    }
+
+    public mutating func merge(_ other: TypingProfileSummary) {
+        includedKeyDownCount += other.includedKeyDownCount
+        printableKeyDownCount += other.printableKeyDownCount
+        backspaceCount += other.backspaceCount
+        excludedEventCount += other.excludedEventCount
+        sessionCount += other.sessionCount
+        burstCount += other.burstCount
+        totalBurstKeyCount += other.totalBurstKeyCount
+        dwellHistogram.merge(other.dwellHistogram)
+        flightHistogram.merge(other.flightHistogram)
+        pauseHistogram.merge(other.pauseHistogram)
+        burstLengthHistogram.merge(other.burstLengthHistogram)
+        correctionBurstHistogram.merge(other.correctionBurstHistogram)
+        preCorrectionFlightHistogram.merge(other.preCorrectionFlightHistogram)
+        recoveryFlightHistogram.merge(other.recoveryFlightHistogram)
+
+        Self.mergeHistogramDictionary(&dwellByKeyClass, other: other.dwellByKeyClass)
+        Self.mergeHistogramDictionary(&flightByHandPattern, other: other.flightByHandPattern)
+        Self.mergeHistogramDictionary(&flightByDistanceBucket, other: other.flightByDistanceBucket)
+
+        if let otherLastIncludedEventAt = other.lastIncludedEventAt,
+           lastIncludedEventAt.map({ otherLastIncludedEventAt > $0 }) ?? true {
+            lastIncludedEventAt = otherLastIncludedEventAt
+        }
+
+        if let otherLastUpdatedAt = other.lastUpdatedAt,
+           lastUpdatedAt.map({ otherLastUpdatedAt > $0 }) ?? true {
+            lastUpdatedAt = otherLastUpdatedAt
+        }
+    }
+
+    private static func mergeHistogramDictionary(
+        _ target: inout [String: DistributionHistogram],
+        other: [String: DistributionHistogram]
+    ) {
+        for (key, value) in other {
+            var histogram = target[key] ?? value
+            if target[key] != nil {
+                histogram.merge(value)
+            }
+            target[key] = histogram
+        }
+    }
+}
+
+public struct ProfileInsight: Identifiable, Equatable, Sendable {
+    public let id: UUID
+    public let title: String
+    public let detail: String
+
+    public init(
+        id: UUID = UUID(),
+        title: String,
+        detail: String
+    ) {
+        self.id = id
+        self.title = title
+        self.detail = detail
+    }
+}
+
+public struct TypingProfileSnapshot: Equatable, Sendable {
+    public var today: TypingProfileSummary
+    public var baseline: TypingProfileSummary
+    public var baselineDayCount: Int
+    public var confidence: ProfileConfidenceState
+    public var insights: [ProfileInsight]
+
+    public init(
+        today: TypingProfileSummary = TypingProfileSummary(),
+        baseline: TypingProfileSummary = TypingProfileSummary(),
+        baselineDayCount: Int = 0,
+        confidence: ProfileConfidenceState = .warmingUp,
+        insights: [ProfileInsight] = []
+    ) {
+        self.today = today
+        self.baseline = baseline
+        self.baselineDayCount = baselineDayCount
+        self.confidence = confidence
+        self.insights = insights
+    }
+}
+
+public struct TrustState: Equatable, Sendable {
+    public var secureInputState: SecureInputState
+    public var profileStorePath: String
+    public var manualExclusionsStorePath: String
+    public var storesRawText: Bool
+    public var storesLiteralNGrams: Bool
+    public var note: String
+
+    public init(
+        secureInputState: SecureInputState = .unavailable,
+        profileStorePath: String = "",
+        manualExclusionsStorePath: String = "",
+        storesRawText: Bool = false,
+        storesLiteralNGrams: Bool = false,
+        note: String = "Typing Lens stores profile summaries locally and keeps raw preview debug-only in memory."
+    ) {
+        self.secureInputState = secureInputState
+        self.profileStorePath = profileStorePath
+        self.manualExclusionsStorePath = manualExclusionsStorePath
+        self.storesRawText = storesRawText
+        self.storesLiteralNGrams = storesLiteralNGrams
+        self.note = note
     }
 }
 
@@ -236,7 +641,9 @@ public struct CaptureDashboardState: Equatable, Sendable {
     public var captureActivityState: CaptureActivityState
     public var isPaused: Bool
     public var tapHealth: TapHealth
-    public var aggregateMetrics: AggregateTypingMetrics
+    public var profileSnapshot: TypingProfileSnapshot
+    public var advancedDiagnostics: AggregateTypingMetrics
+    public var trustState: TrustState
     public var exclusionStatus: ExclusionStatus
     public var debugPreviewText: String
     public var recentEvents: [DebugPreviewEvent]
@@ -247,7 +654,9 @@ public struct CaptureDashboardState: Equatable, Sendable {
         captureActivityState: CaptureActivityState = .needsPermission,
         isPaused: Bool = false,
         tapHealth: TapHealth = TapHealth(),
-        aggregateMetrics: AggregateTypingMetrics = AggregateTypingMetrics(),
+        profileSnapshot: TypingProfileSnapshot = TypingProfileSnapshot(),
+        advancedDiagnostics: AggregateTypingMetrics = AggregateTypingMetrics(),
+        trustState: TrustState = TrustState(),
         exclusionStatus: ExclusionStatus = ExclusionStatus(),
         debugPreviewText: String = "",
         recentEvents: [DebugPreviewEvent] = [],
@@ -257,7 +666,9 @@ public struct CaptureDashboardState: Equatable, Sendable {
         self.captureActivityState = captureActivityState
         self.isPaused = isPaused
         self.tapHealth = tapHealth
-        self.aggregateMetrics = aggregateMetrics
+        self.profileSnapshot = profileSnapshot
+        self.advancedDiagnostics = advancedDiagnostics
+        self.trustState = trustState
         self.exclusionStatus = exclusionStatus
         self.debugPreviewText = debugPreviewText
         self.recentEvents = recentEvents

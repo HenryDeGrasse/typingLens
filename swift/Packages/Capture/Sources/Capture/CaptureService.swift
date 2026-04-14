@@ -1,5 +1,8 @@
 import AppKit
 import Combine
+#if canImport(Carbon)
+import Carbon
+#endif
 import Core
 import Foundation
 
@@ -7,45 +10,56 @@ import Foundation
 public final class CaptureService: ObservableObject {
     @Published public private(set) var state: CaptureDashboardState
 
-    // Future seam: this transient raw buffer stays debug-only and in-memory. Product
-    // features should read aggregateMetrics instead of depending on raw event text.
+    // Future seam: keep any raw preview transient and debug-only. Product features
+    // should read profileSnapshot instead of depending on text-like diagnostics.
     private let debugBuffer = InMemoryDebugBuffer(maxPreviewCharacters: 120, maxEvents: 12)
 
-    // Future seam: keep native tap behavior isolated from aggregation, exclusions, and UI.
+    // Future seam: keep native capture, profile aggregation, and UI wiring separated.
     private let eventTap = KeyboardEventTap()
-    private let aggregateStore = AggregateMetricsStore()
+    private let profileEngine = TypingProfileEngine()
+    private let advancedDiagnosticsAggregator = TypingMetricsAggregator()
     private let manualExclusionStore = ManualExclusionStore()
-    private let aggregator: TypingMetricsAggregator
+    private let legacyAggregateStore = AggregateMetricsStore()
 
     private var manualExcludedApplications: [ExcludedApplication]
     private var activationObserver: NSObjectProtocol?
     private var backgroundObserver: NSObjectProtocol?
     private var terminationObserver: NSObjectProtocol?
+    private var secureInputPollTimer: Timer?
     private var lastRuntimeNote: String?
     private var exclusionNote: String?
     private var lastObservedApplication: ObservedApplication?
     private var lastExcludedAppName: String?
-    private var unsavedAggregateMutations = 0
+    private var secureInputState: SecureInputState = .unavailable
+    private var unsavedProfileMutations = 0
 
     public init() {
-        let persistedMetrics = aggregateStore.load()
+        try? legacyAggregateStore.clear()
+
         let manualExcludedApplications = manualExclusionStore.load()
             .sorted(using: KeyPathComparator(\.displayName, comparator: .localizedStandard))
-
         self.manualExcludedApplications = manualExcludedApplications
-        self.aggregator = TypingMetricsAggregator(initialMetrics: persistedMetrics)
+
         self.state = CaptureDashboardState(
-            aggregateMetrics: persistedMetrics,
+            profileSnapshot: profileEngine.currentSnapshot(),
+            advancedDiagnostics: advancedDiagnosticsAggregator.metrics,
+            trustState: TrustState(
+                secureInputState: .unavailable,
+                profileStorePath: profileEngine.persistenceDescription,
+                manualExclusionsStorePath: manualExclusionStore.persistenceDescription,
+                storesRawText: false,
+                storesLiteralNGrams: false,
+                note: "Typing Lens stores content-free local profile summaries. Raw preview stays debug-only in memory and any legacy M2 literal n-gram store is cleared on launch."
+            ),
             exclusionStatus: ExclusionStatus(
                 builtInExcludedApplications: ApplicationExclusionPolicy.builtInExcludedApplications,
-                manualExcludedApplications: manualExcludedApplications,
-                excludedEventCount: persistedMetrics.excludedEventCount
+                manualExcludedApplications: manualExcludedApplications
             )
         )
 
         configureTapCallbacks()
         installLifecycleObservers()
-        refreshExclusionState()
+        installSecureInputPolling()
         refreshPermissionState()
         startTapIfPossible()
     }
@@ -112,10 +126,12 @@ public final class CaptureService: ObservableObject {
     public func refreshPermissionState() {
         state.permissionState = InputMonitoringPermissionManager.currentState()
         state.guidanceText = InputMonitoringPermissionManager.guidanceText(for: state.permissionState)
+        refreshSecureInputState()
 
         if state.permissionState != .granted {
             state.isPaused = false
             eventTap.uninstall()
+            profileEngine.interruptSession()
             lastRuntimeNote = nil
         }
 
@@ -148,7 +164,8 @@ public final class CaptureService: ObservableObject {
         guard state.permissionState == .granted else { return }
         state.isPaused = true
         eventTap.setEnabled(false)
-        persistAggregates(force: true)
+        profileEngine.interruptSession()
+        persistProfile(force: true)
         refreshDerivedStateAndHealth()
     }
 
@@ -161,8 +178,6 @@ public final class CaptureService: ObservableObject {
 
     public func resetCaptureData() {
         debugBuffer.reset()
-        aggregator.reset()
-        state.aggregateMetrics = aggregator.metrics
         state.debugPreviewText = ""
         state.recentEvents = []
         state.tapHealth.lastEventAt = nil
@@ -170,14 +185,16 @@ public final class CaptureService: ObservableObject {
         lastObservedApplication = nil
         lastExcludedAppName = nil
         exclusionNote = nil
-        unsavedAggregateMutations = 0
+        unsavedProfileMutations = 0
 
         do {
-            try aggregateStore.clear()
+            try profileEngine.reset()
+            try? legacyAggregateStore.clear()
         } catch {
-            lastRuntimeNote = "Could not clear aggregate store: \(error.localizedDescription)"
+            lastRuntimeNote = "Could not clear profile store: \(error.localizedDescription)"
         }
 
+        advancedDiagnosticsAggregator.reset()
         refreshDerivedStateAndHealth()
     }
 
@@ -292,7 +309,7 @@ public final class CaptureService: ObservableObject {
             queue: .main
         ) { [weak self] _ in
             Task { @MainActor [weak self] in
-                self?.persistAggregates(force: true)
+                self?.persistProfile(force: true)
             }
         }
 
@@ -302,83 +319,123 @@ public final class CaptureService: ObservableObject {
             queue: .main
         ) { [weak self] _ in
             Task { @MainActor [weak self] in
-                self?.persistAggregates(force: true)
+                self?.persistProfile(force: true)
             }
         }
+    }
+
+    private func installSecureInputPolling() {
+        secureInputPollTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                self?.refreshSecureInputState()
+                self?.refreshDerivedStateAndHealth()
+            }
+        }
+        secureInputPollTimer?.tolerance = 0.25
+    }
+
+    private func refreshSecureInputState() {
+        #if canImport(Carbon)
+        secureInputState = IsSecureEventInputEnabled() ? .enabled : .disabled
+        #else
+        secureInputState = .unavailable
+        #endif
     }
 
     private func handleObservedKeyEvent(_ observedEvent: ObservedKeyEvent) {
         guard state.permissionState == .granted else { return }
         guard !state.isPaused else { return }
 
+        refreshSecureInputState()
         state.tapHealth.lastEventAt = observedEvent.timestamp
 
-        let activeApplication = ApplicationExclusionPolicy.currentFrontmostApplication()
-        lastObservedApplication = activeApplication?.asObservedApplication
-
-        if ApplicationExclusionPolicy.shouldExclude(
-            activeApplication,
-            manualBundleIdentifiers: manualExcludedBundleIdentifiers
-        ) {
-            aggregator.recordExcludedEvent(timestamp: observedEvent.timestamp)
-            state.aggregateMetrics = aggregator.metrics
-            lastExcludedAppName = activeApplication?.displayName
-            lastRuntimeNote = "Tap is healthy, but events from \(activeApplication?.displayName ?? "this app") are currently excluded."
-            markAggregatesDirty()
+        if secureInputState == .enabled {
+            profileEngine.interruptSession()
             refreshDerivedStateAndHealth()
             return
         }
 
+        let activeApplication = ApplicationExclusionPolicy.currentFrontmostApplication()
+        lastObservedApplication = activeApplication?.asObservedApplication
+
         let classifiedEvent = KeyEventNormalizer.classify(observedEvent)
-        aggregator.recordIncludedEvent(
-            token: classifiedEvent.aggregateToken,
-            isBackspace: classifiedEvent.isBackspace,
-            timestamp: classifiedEvent.timestamp
-        )
 
-        debugBuffer.append(
-            renderedValue: classifiedEvent.debugRenderedValue,
-            kind: classifiedEvent.kind,
-            keyCode: classifiedEvent.keyCode,
-            timestamp: classifiedEvent.timestamp
-        )
+        if observedEvent.phase == .keyDown,
+           ApplicationExclusionPolicy.shouldExclude(
+                activeApplication,
+                manualBundleIdentifiers: manualExcludedBundleIdentifiers
+           ) {
+            profileEngine.recordExcludedKeyDown(at: observedEvent.timestamp)
+            advancedDiagnosticsAggregator.recordExcludedEvent(timestamp: observedEvent.timestamp)
+            lastExcludedAppName = activeApplication?.displayName
+            lastRuntimeNote = "Tap is healthy, but events from \(activeApplication?.displayName ?? "this app") are currently excluded."
+            markProfileDirty()
+            refreshDerivedStateAndHealth()
+            return
+        }
 
-        state.aggregateMetrics = aggregator.metrics
-        state.debugPreviewText = debugBuffer.previewText
-        state.recentEvents = debugBuffer.events
-        lastRuntimeNote = nil
-        markAggregatesDirty()
+        profileEngine.record(classifiedEvent)
+
+        if classifiedEvent.eventPhase == .keyDown, classifiedEvent.shouldUseInProfile {
+            advancedDiagnosticsAggregator.recordIncludedEvent(
+                token: classifiedEvent.advancedAggregateToken,
+                isBackspace: classifiedEvent.isBackspace,
+                timestamp: classifiedEvent.timestamp
+            )
+
+            debugBuffer.append(
+                renderedValue: classifiedEvent.debugRenderedValue,
+                kind: classifiedEvent.kind,
+                keyCode: classifiedEvent.keyCode,
+                timestamp: classifiedEvent.timestamp
+            )
+
+            state.debugPreviewText = debugBuffer.previewText
+            state.recentEvents = debugBuffer.events
+            lastRuntimeNote = nil
+        }
+
+        markProfileDirty()
         refreshDerivedStateAndHealth()
     }
 
-    private func markAggregatesDirty() {
-        unsavedAggregateMutations += 1
-        if unsavedAggregateMutations >= 20 {
-            persistAggregates(force: true)
+    private func markProfileDirty() {
+        unsavedProfileMutations += 1
+        if unsavedProfileMutations >= 60 {
+            persistProfile(force: true)
         }
     }
 
-    private func persistAggregates(force: Bool) {
-        guard force || unsavedAggregateMutations > 0 else {
+    private func persistProfile(force: Bool) {
+        guard force || unsavedProfileMutations > 0 else {
             return
         }
 
         do {
-            try aggregateStore.save(aggregator.metrics)
-            unsavedAggregateMutations = 0
+            try profileEngine.persist()
+            unsavedProfileMutations = 0
         } catch {
-            lastRuntimeNote = "Could not persist aggregate metrics: \(error.localizedDescription)"
+            lastRuntimeNote = "Could not persist profile summaries: \(error.localizedDescription)"
         }
     }
 
     private func refreshDerivedStateAndHealth() {
         state.captureActivityState = currentCaptureActivityState()
-        state.aggregateMetrics = aggregator.metrics
+        state.profileSnapshot = profileEngine.currentSnapshot()
+        state.advancedDiagnostics = advancedDiagnosticsAggregator.metrics
         state.tapHealth = TapHealth(
             isInstalled: eventTap.isInstalled,
             isEnabled: eventTap.isEnabled,
             lastEventAt: state.tapHealth.lastEventAt,
             statusNote: currentTapNote()
+        )
+        state.trustState = TrustState(
+            secureInputState: secureInputState,
+            profileStorePath: profileEngine.persistenceDescription,
+            manualExclusionsStorePath: manualExclusionStore.persistenceDescription,
+            storesRawText: false,
+            storesLiteralNGrams: false,
+            note: "Typing Lens stores content-free daily profile summaries locally. Literal n-grams and raw preview text are not persisted, and any legacy M2 literal n-gram store is cleared on launch."
         )
         refreshExclusionState()
     }
@@ -387,7 +444,7 @@ public final class CaptureService: ObservableObject {
         state.exclusionStatus = ExclusionStatus(
             builtInExcludedApplications: ApplicationExclusionPolicy.builtInExcludedApplications,
             manualExcludedApplications: manualExcludedApplications,
-            excludedEventCount: aggregator.metrics.excludedEventCount,
+            excludedEventCount: state.profileSnapshot.today.excludedEventCount,
             lastExcludedAppName: lastExcludedAppName,
             lastObservedApplication: lastObservedApplication,
             note: exclusionNote
@@ -405,6 +462,10 @@ public final class CaptureService: ObservableObject {
                 return .paused
             }
 
+            if secureInputState == .enabled {
+                return .secureInputBlocked
+            }
+
             if eventTap.isInstalled && eventTap.isEnabled {
                 return .recording
             }
@@ -416,6 +477,10 @@ public final class CaptureService: ObservableObject {
     private func currentTapNote() -> String {
         if state.permissionState != .granted {
             return "Tap not installed because Input Monitoring is not granted."
+        }
+
+        if secureInputState == .enabled {
+            return "Secure Event Input is currently enabled by another app, so Typing Lens is temporarily blocked from observing keystrokes."
         }
 
         if !eventTap.isInstalled {
@@ -433,7 +498,7 @@ public final class CaptureService: ObservableObject {
             return lastRuntimeNote
         }
 
-        return "Tap installed and listening for aggregate diagnostics."
+        return "Tap installed and listening for local profile summaries."
     }
 
     private func note(for error: Error) -> String {

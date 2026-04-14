@@ -2,13 +2,20 @@ import Core
 import CoreGraphics
 import Foundation
 
+enum ObservedKeyEventPhase {
+    case keyDown
+    case keyUp
+}
+
 struct ObservedKeyEvent {
     let timestamp: Date
+    let phase: ObservedKeyEventPhase
     let keyCode: Int64
     let kind: String
     let renderedValue: String
     let isBackspace: Bool
     let flags: CGEventFlags
+    let isAutoRepeat: Bool
 }
 
 enum KeyboardEventTapError: Error {
@@ -39,7 +46,10 @@ final class KeyboardEventTap {
             return
         }
 
-        let eventMask = CGEventMask(1) << CGEventType.keyDown.rawValue
+        let eventMask =
+            (CGEventMask(1) << CGEventType.keyDown.rawValue)
+            | (CGEventMask(1) << CGEventType.keyUp.rawValue)
+
         let callback: CGEventTapCallBack = { _, type, event, userInfo in
             guard let userInfo else {
                 return Unmanaged.passUnretained(event)
@@ -111,8 +121,8 @@ final class KeyboardEventTap {
                 isEnabled = true
                 onTapNote?("Tap auto-re-enabled after user input disable.")
             }
-        case .keyDown:
-            onObservedKeyEvent?(ObservedKeyEvent.from(event: event))
+        case .keyDown, .keyUp:
+            onObservedKeyEvent?(ObservedKeyEvent.from(event: event, type: type))
         default:
             break
         }
@@ -122,18 +132,27 @@ final class KeyboardEventTap {
 }
 
 private extension ObservedKeyEvent {
-    static func from(event: CGEvent) -> ObservedKeyEvent {
+    static func from(event: CGEvent, type: CGEventType) -> ObservedKeyEvent {
         let keyCode = event.getIntegerValueField(.keyboardEventKeycode)
         let rawValue = event.debugRenderedValue(for: keyCode)
-        let kind = keyCode == 51 ? "backspace" : "keyDown"
+        let isBackspace = keyCode == 51
+        let phase: ObservedKeyEventPhase = type == .keyUp ? .keyUp : .keyDown
+        let kind = switch phase {
+        case .keyDown:
+            isBackspace ? "backspaceDown" : "keyDown"
+        case .keyUp:
+            isBackspace ? "backspaceUp" : "keyUp"
+        }
 
         return ObservedKeyEvent(
             timestamp: Date(),
+            phase: phase,
             keyCode: keyCode,
             kind: kind,
             renderedValue: rawValue,
-            isBackspace: keyCode == 51,
-            flags: event.flags
+            isBackspace: isBackspace,
+            flags: event.flags,
+            isAutoRepeat: event.getIntegerValueField(.keyboardEventAutorepeat) != 0
         )
     }
 }

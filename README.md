@@ -1,20 +1,21 @@
-# Typing Lens · M2 Aggregate Diagnostics Prototype
+# Typing Lens · M3 Local Profile Engine
 
 Typing Lens is a local-first typing coach.
 
-This repo currently contains a small macOS prototype focused on trustable, privacy-safer typing diagnostics. The app still uses a listen-only keyboard event tap after explicit macOS approval, but the main product UI now emphasizes aggregate metrics instead of raw captured text.
+This repo currently contains a small macOS prototype focused on trustworthy, privacy-safer typing diagnostics. The app still uses a listen-only keyboard event tap after explicit macOS approval, but the main product UI now focuses on a local typing profile instead of persisted literal n-grams or raw text.
 
-## What changed from the first MVP
+## What changed from M2
 
-The first milestone proved that Typing Lens could responsibly observe keyboard activity after Input Monitoring approval.
+M2 proved that Typing Lens could capture aggregate-first typing diagnostics with exclusions and trustable local behavior.
 
-This milestone upgrades that raw/debug capture demo into an **aggregate-first prototype**:
+M3 upgrades that into a **local profile engine**:
 
-- raw preview is no longer the main UI
-- the main app surface emphasizes counts, backspace density, and n-grams
-- a small exclusion policy ignores some obviously sensitive or misleading apps
-- aggregate metrics can persist locally between launches
-- any raw preview remains debug-only, transient, and in memory only
+- the main UI now emphasizes **rhythm, flow, correction, and reach**
+- the app captures both key-down and key-up so it can estimate **flight** and **dwell** timing
+- it persists **content-free daily profile summaries** instead of persisted literal bigram/trigram tables
+- bigrams and trigrams are demoted into **transient advanced diagnostics only**
+- the app surfaces **baseline-building** vs **baseline-ready** states
+- it surfaces **secure input blocked** when macOS says secure event input is active
 
 ## What this prototype does
 
@@ -26,39 +27,46 @@ This milestone upgrades that raw/debug capture demo into an **aggregate-first pr
   - permission denied
   - recording
   - paused
+  - secure input blocked
   - tap unavailable
-- shows privacy-safer aggregate metrics:
-  - total observed keydowns
-  - total backspaces
-  - backspace density
-  - top bigrams
-  - top trigrams
-  - simple average latency for bigrams/trigrams
-  - last included event time
-  - last aggregate update time
-- supports pause/resume
-- supports reset/clear
-- ignores events from a small hardcoded denylist of apps such as Terminal, iTerm, some password managers, and some remote desktop / VM apps
-- lets you add and remove manual app exclusions by bundle ID or from the last observed app
-- keeps a demoted debug-only raw preview in RAM only
-- optionally persists **aggregate metrics only** to a local JSON file
+- keeps built-in and manual excluded apps
+- builds a local typing profile using:
+  - flight timing summaries
+  - dwell timing summaries
+  - pause distributions
+  - burst distributions
+  - correction burst summaries
+  - same-hand vs cross-hand timing
+  - approximate reach-distance timing buckets
+- shows a profile-first UI with:
+  - overview
+  - rhythm
+  - flow
+  - accuracy
+  - reach
+  - what changed
+  - trust + tap health
+- keeps a macOS menu bar extra for quick status/actions
+- keeps advanced literal n-gram diagnostics only as a transient, demoted section
+- keeps a raw preview only for debug validation in DEBUG builds
 
 ## What this prototype does not do
 
 - no raw typed text persistence
 - no raw event-stream persistence
+- no persistent literal bigram/trigram storage in the main M3 profile
 - no network activity
 - no sync/backend/account system
-- no coaching, prescription, or practice generation yet
+- no coaching or practice generation yet
 - no web UI yet
 
 ## Repo structure
 
 ```text
 apps/mac/               Runnable macOS app package + app bundle metadata
-swift/Packages/Core/    Small pure shared Swift types and state models
+swift/Packages/Core/    Small pure shared Swift types and profile/dashboard state models
 swift/Packages/Capture/ Permission flow, tap management, normalization, exclusions,
-                        aggregate metrics, and local aggregate store
+                        profile aggregation, and local summary stores
 packages/               Placeholder for future TypeScript/web packages
 docs/                   Vision, ownership lanes, and roadmap
 scripts/                Local build/run helpers
@@ -102,42 +110,64 @@ If you only want to build:
 6. Confirm the UI shows:
    - permission = `granted`
    - capture = `recording`
-   - tap = installed/enabled
+   - trust panel shows local profile storage paths
 7. Open a non-excluded app such as TextEdit or Notes.
-8. Type a short sentence and use backspace a few times.
+8. Type a short paragraph, pause a few times, and use backspace a few times.
 9. Return to Typing Lens and confirm these update:
-   - observed keydowns
-   - backspaces
+   - included keydowns
    - backspace density
-   - top bigrams
-   - top trigrams
+   - sessions / burst length
+   - rhythm cards (flight / dwell)
+   - flow histograms (pause / burst)
+   - correction section
+   - reach section
    - last included event time
-   - last aggregate update time
 10. Open Terminal and type a few keys.
 11. Return to Typing Lens and confirm:
-    - total observed keydowns did **not** increase from those Terminal keystrokes
-    - excluded event count increased
+   - profile counts did **not** increase from those Terminal keystrokes
+   - excluded event count increased
 12. Use the **Excluded Apps** section to:
-    - add the last observed app to manual exclusions, or
-    - enter a bundle ID manually
-13. Type in that manually excluded app and confirm its keystrokes do **not** increase the main aggregate metrics.
-14. Click **Pause Capture** and verify typing in TextEdit or Notes no longer changes aggregates.
-15. Click **Resume Capture** and verify aggregates start moving again.
-16. Click **Reset Aggregates + Debug State** and verify aggregates/debug state are cleared.
-17. Optional persistence check:
-    - inspect `~/Library/Application Support/ai.gauntlet.typinglens/aggregate-metrics.json`
-    - confirm it contains aggregate counts / n-gram dictionaries only
-    - confirm it does **not** contain the raw debug preview or full typed text
+   - add the last observed app to manual exclusions, or
+   - enter a bundle ID manually
+13. Type in that manually excluded app and confirm its keystrokes do **not** increase the main profile metrics.
+14. Click **Pause Capture** and verify typing in TextEdit or Notes no longer changes the profile.
+15. Click **Resume Capture** and verify the profile starts moving again.
+16. Click **Reset Profile + Diagnostics** and verify profile summaries, transient diagnostics, and debug state are cleared.
+17. Open the Typing Lens icon in the macOS menu bar and confirm you can:
+   - see capture status at a glance
+   - open the main app window
+   - pause/resume capture
+   - exclude the last observed app
+18. Optional persistence check:
+   - inspect `~/Library/Application Support/ai.gauntlet.typinglens/typing-profile-store.json`
+   - confirm it contains profile summaries / histograms only
+   - confirm it does **not** contain raw preview text or literal n-gram strings from typing
 
 ## Privacy and storage notes
 
-- The product-facing UI is aggregate-first.
-- A raw debug preview still exists only for local development validation.
-- That debug preview stays in memory only.
+- The product-facing UI is profile-first and content-free.
+- The persisted M3 store is a local summary store of counts and histograms.
 - The app does **not** write raw typed text to disk.
 - The app does **not** write raw event streams to disk.
+- The app does **not** persist the debug raw preview.
+- The app does **not** persist literal bigram/trigram tables in the main M3 profile store.
 - The app does **not** send captured data over the network.
-- The local JSON store is aggregate-only and meant to keep this prototype small.
+- Manual exclusions are stored separately as app identifiers only.
+- On launch, the app clears the old M2 aggregate store so literal n-gram persistence does not carry forward into M3.
+
+## Current trust model
+
+Typing Lens currently stores:
+
+- local profile summaries (`typing-profile-store.json`)
+- local manual app exclusions (`manual-excluded-apps.json`)
+
+Typing Lens currently does **not** store:
+
+- raw typed text
+- raw debug preview text
+- raw event streams
+- persisted literal n-gram diagnostics
 
 ## Current exclusions
 
@@ -154,9 +184,7 @@ The app currently ignores a first-pass hardcoded set of bundle IDs including:
 - TeamViewer
 - AnyDesk
 
-This list is intentionally small and incomplete. It is only an MVP trust/safety step.
-
-You can also add your own exclusions locally from the app UI. Manual exclusions are stored separately from the aggregate metrics and contain app identifiers only, not captured text.
+You can also add your own exclusions locally from the app UI. Manual exclusions contain app identifiers only, not captured text.
 
 ## Development caveat
 
@@ -171,6 +199,6 @@ If permission appears stuck:
 
 ## Current milestone
 
-- **M2:** aggregate diagnostics prototype
+- **M3:** local profile engine + baseline UI
 
 See `docs/vision.md`, `docs/ownership.md`, and `docs/roadmap.md` for the intended longer-term direction.
