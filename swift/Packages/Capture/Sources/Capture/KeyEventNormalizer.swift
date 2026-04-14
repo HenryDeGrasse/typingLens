@@ -11,6 +11,7 @@ struct ClassifiedKeyEvent {
     let advancedAggregateToken: String?
     let keyClass: KeyClass
     let isBackspace: Bool
+    let isAutoRepeat: Bool
     let countsAsPrintable: Bool
     let shouldUseInProfile: Bool
     let shouldTrackDwell: Bool
@@ -57,6 +58,7 @@ enum KeyEventNormalizer {
             advancedAggregateToken: advancedAggregateToken(for: observedEvent),
             keyClass: keyClass,
             isBackspace: observedEvent.isBackspace,
+            isAutoRepeat: observedEvent.isAutoRepeat,
             countsAsPrintable: [.letter, .number, .punctuation].contains(keyClass),
             shouldUseInProfile: shouldUseInProfile,
             shouldTrackDwell: shouldTrackDwell && isProfileRelevantKeyClass && !suppressForProfile

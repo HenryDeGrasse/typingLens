@@ -251,6 +251,7 @@ public struct TypingProfileSummary: Equatable, Codable, Sendable {
     public var includedKeyDownCount: Int
     public var printableKeyDownCount: Int
     public var backspaceCount: Int
+    public var heldDeleteBurstCount: Int
     public var excludedEventCount: Int
     public var sessionCount: Int
     public var burstCount: Int
@@ -260,6 +261,7 @@ public struct TypingProfileSummary: Equatable, Codable, Sendable {
     public var pauseHistogram: DistributionHistogram
     public var burstLengthHistogram: DistributionHistogram
     public var correctionBurstHistogram: DistributionHistogram
+    public var heldDeleteDurationHistogram: DistributionHistogram
     public var preCorrectionFlightHistogram: DistributionHistogram
     public var recoveryFlightHistogram: DistributionHistogram
     public var dwellByKeyClass: [String: DistributionHistogram]
@@ -272,6 +274,7 @@ public struct TypingProfileSummary: Equatable, Codable, Sendable {
         includedKeyDownCount: Int = 0,
         printableKeyDownCount: Int = 0,
         backspaceCount: Int = 0,
+        heldDeleteBurstCount: Int = 0,
         excludedEventCount: Int = 0,
         sessionCount: Int = 0,
         burstCount: Int = 0,
@@ -281,6 +284,7 @@ public struct TypingProfileSummary: Equatable, Codable, Sendable {
         pauseHistogram: DistributionHistogram = .pauseTiming(),
         burstLengthHistogram: DistributionHistogram = .burstLengths(),
         correctionBurstHistogram: DistributionHistogram = .correctionBurstLengths(),
+        heldDeleteDurationHistogram: DistributionHistogram = .pauseTiming(),
         preCorrectionFlightHistogram: DistributionHistogram = .timing(),
         recoveryFlightHistogram: DistributionHistogram = .timing(),
         dwellByKeyClass: [String: DistributionHistogram] = [:],
@@ -292,6 +296,7 @@ public struct TypingProfileSummary: Equatable, Codable, Sendable {
         self.includedKeyDownCount = includedKeyDownCount
         self.printableKeyDownCount = printableKeyDownCount
         self.backspaceCount = backspaceCount
+        self.heldDeleteBurstCount = heldDeleteBurstCount
         self.excludedEventCount = excludedEventCount
         self.sessionCount = sessionCount
         self.burstCount = burstCount
@@ -301,6 +306,7 @@ public struct TypingProfileSummary: Equatable, Codable, Sendable {
         self.pauseHistogram = pauseHistogram
         self.burstLengthHistogram = burstLengthHistogram
         self.correctionBurstHistogram = correctionBurstHistogram
+        self.heldDeleteDurationHistogram = heldDeleteDurationHistogram
         self.preCorrectionFlightHistogram = preCorrectionFlightHistogram
         self.recoveryFlightHistogram = recoveryFlightHistogram
         self.dwellByKeyClass = dwellByKeyClass
@@ -336,6 +342,10 @@ public struct TypingProfileSummary: Equatable, Codable, Sendable {
         TimingStatsSummary(histogram: preCorrectionFlightHistogram)
     }
 
+    public var heldDeleteStats: TimingStatsSummary {
+        TimingStatsSummary(histogram: heldDeleteDurationHistogram)
+    }
+
     public var recoveryStats: TimingStatsSummary {
         TimingStatsSummary(histogram: recoveryFlightHistogram)
     }
@@ -356,6 +366,7 @@ public struct TypingProfileSummary: Equatable, Codable, Sendable {
         includedKeyDownCount += other.includedKeyDownCount
         printableKeyDownCount += other.printableKeyDownCount
         backspaceCount += other.backspaceCount
+        heldDeleteBurstCount += other.heldDeleteBurstCount
         excludedEventCount += other.excludedEventCount
         sessionCount += other.sessionCount
         burstCount += other.burstCount
@@ -365,6 +376,7 @@ public struct TypingProfileSummary: Equatable, Codable, Sendable {
         pauseHistogram.merge(other.pauseHistogram)
         burstLengthHistogram.merge(other.burstLengthHistogram)
         correctionBurstHistogram.merge(other.correctionBurstHistogram)
+        heldDeleteDurationHistogram.merge(other.heldDeleteDurationHistogram)
         preCorrectionFlightHistogram.merge(other.preCorrectionFlightHistogram)
         recoveryFlightHistogram.merge(other.recoveryFlightHistogram)
 

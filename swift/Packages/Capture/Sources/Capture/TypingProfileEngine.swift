@@ -14,6 +14,8 @@ final class TypingProfileEngine {
         var lastIncludedKeyCode: Int64?
         var currentCorrectionBurstLength = 0
         var lastBackspaceAt: Date?
+        var backspaceHoldStartedAt: Date?
+        var sawHeldDeleteAutoRepeat = false
 
         mutating func clearContinuity() {
             isSessionOpen = false
@@ -22,6 +24,8 @@ final class TypingProfileEngine {
             lastIncludedKeyCode = nil
             currentCorrectionBurstLength = 0
             lastBackspaceAt = nil
+            backspaceHoldStartedAt = nil
+            sawHeldDeleteAutoRepeat = false
         }
     }
 
@@ -136,6 +140,17 @@ final class TypingProfileEngine {
             )
         }
 
+        if event.isBackspace {
+            if event.isAutoRepeat {
+                sessionState.sawHeldDeleteAutoRepeat = true
+                return
+            }
+
+            if sessionState.backspaceHoldStartedAt == nil {
+                sessionState.backspaceHoldStartedAt = event.timestamp
+            }
+        }
+
         guard event.shouldUseInProfile else {
             return
         }
@@ -158,9 +173,8 @@ final class TypingProfileEngine {
             } else if pauseMilliseconds >= burstBoundaryMilliseconds {
                 currentDaySummary.pauseHistogram.insert(pauseMilliseconds)
                 closeCurrentBurstIfNeeded()
-            }
-
-            if pauseMilliseconds >= 0, pauseMilliseconds <= maxFlightMilliseconds {
+                closeCorrectionBurstIfNeeded()
+            } else if pauseMilliseconds >= 0, pauseMilliseconds <= maxFlightMilliseconds {
                 currentDaySummary.flightHistogram.insert(pauseMilliseconds)
 
                 let handPattern = KeyGeometryMap.handPattern(from: lastIncludedKeyCode, to: event.keyCode)
@@ -220,6 +234,21 @@ final class TypingProfileEngine {
 
         guard let activeKeyDown = activeKeyDowns.removeValue(forKey: event.keyCode) else {
             return
+        }
+
+        if event.isBackspace,
+           let backspaceHoldStartedAt = sessionState.backspaceHoldStartedAt {
+            if sessionState.sawHeldDeleteAutoRepeat {
+                let heldDeleteDuration = event.timestamp.timeIntervalSince(backspaceHoldStartedAt) * 1_000
+                if heldDeleteDuration >= 0 {
+                    currentDaySummary.heldDeleteBurstCount += 1
+                    currentDaySummary.heldDeleteDurationHistogram.insert(heldDeleteDuration)
+                    sessionState.lastBackspaceAt = event.timestamp
+                }
+            }
+
+            sessionState.backspaceHoldStartedAt = nil
+            sessionState.sawHeldDeleteAutoRepeat = false
         }
 
         let dwellMilliseconds = event.timestamp.timeIntervalSince(activeKeyDown.timestamp) * 1_000

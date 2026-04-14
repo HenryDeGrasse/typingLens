@@ -112,14 +112,14 @@ If you only want to build:
    - capture = `recording`
    - trust panel shows local profile storage paths
 7. Open a non-excluded app such as TextEdit or Notes.
-8. Type a short paragraph, pause a few times, and use backspace a few times.
+8. Type a short paragraph, pause a few times to think, use backspace a few times, and once try holding backspace long enough to bulk-delete part of the text.
 9. Return to Typing Lens and confirm these update:
    - included keydowns
    - backspace density
    - sessions / burst length
    - rhythm cards (flight / dwell)
    - flow histograms (pause / burst)
-   - correction section
+   - correction section, including held delete bursts if you tried a bulk delete
    - reach section
    - last included event time
 10. Open Terminal and type a few keys.
