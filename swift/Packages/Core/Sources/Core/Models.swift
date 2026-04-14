@@ -648,12 +648,294 @@ public struct ExclusionStatus: Equatable, Sendable {
     }
 }
 
+public enum SkillNodeLevel: String, Codable, Sendable {
+    case leaf
+    case aggregate
+    case outcome
+}
+
+public enum SkillFamily: String, Codable, Sendable {
+    case coordination
+    case reach
+    case repair
+    case flow
+    case rhythm
+    case outcome
+}
+
+public enum SkillEdgeType: String, Codable, Sendable {
+    case partOf
+    case prerequisite
+    case positiveTransfer
+    case negativeInterference
+    case observes
+}
+
+public enum LearnerStage: String, Codable, Sendable {
+    case foundation
+    case fluent
+    case automatic
+}
+
+public enum WeaknessCategory: String, Codable, Sendable {
+    case sameHandSequences
+    case reachPrecision
+    case accuracyRecovery
+    case handHandoffs
+    case flowConsistency
+}
+
+public enum WeaknessSeverity: String, Codable, Sendable {
+    case mild
+    case moderate
+    case strong
+}
+
+public enum WeaknessConfidence: String, Codable, Sendable {
+    case low
+    case medium
+    case high
+}
+
+public enum WeaknessLifecycleState: String, Codable, Sendable {
+    case monitoring
+    case confirmed
+    case stabilizing
+    case transferring
+    case stable
+}
+
+public enum PracticeDrillFamily: String, Codable, Sendable {
+    case sameHandLadders
+    case reachAndReturn
+    case alternationRails
+    case accuracyReset
+    case meteredFlow
+    case mixedTransfer
+}
+
+public enum PracticeBlockKind: String, Codable, Sendable {
+    case confirmatoryProbe
+    case drill
+    case postCheck
+    case transferCheck
+}
+
+public struct SkillNode: Identifiable, Equatable, Sendable {
+    public let id: String
+    public let name: String
+    public let family: SkillFamily
+    public let level: SkillNodeLevel
+    public let stage: LearnerStage
+    public let detail: String
+
+    public init(
+        id: String,
+        name: String,
+        family: SkillFamily,
+        level: SkillNodeLevel,
+        stage: LearnerStage,
+        detail: String
+    ) {
+        self.id = id
+        self.name = name
+        self.family = family
+        self.level = level
+        self.stage = stage
+        self.detail = detail
+    }
+}
+
+public struct SkillEdge: Identifiable, Equatable, Sendable {
+    public var id: String { "\(fromSkillID)->\(toSkillID):\(type.rawValue)" }
+
+    public let fromSkillID: String
+    public let toSkillID: String
+    public let type: SkillEdgeType
+    public let weight: Double
+    public let note: String
+
+    public init(
+        fromSkillID: String,
+        toSkillID: String,
+        type: SkillEdgeType,
+        weight: Double,
+        note: String
+    ) {
+        self.fromSkillID = fromSkillID
+        self.toSkillID = toSkillID
+        self.type = type
+        self.weight = weight
+        self.note = note
+    }
+}
+
+public struct SkillDimensionState: Equatable, Codable, Sendable {
+    public var control: Double
+    public var automaticity: Double
+    public var consistency: Double
+    public var stability: Double
+
+    public init(
+        control: Double = 0,
+        automaticity: Double = 0,
+        consistency: Double = 0,
+        stability: Double = 0
+    ) {
+        self.control = control
+        self.automaticity = automaticity
+        self.consistency = consistency
+        self.stability = stability
+    }
+}
+
+public struct StudentSkillState: Identifiable, Equatable, Sendable {
+    public let id: String
+    public let title: String
+    public let current: SkillDimensionState
+    public let target: SkillDimensionState
+    public let confidence: WeaknessConfidence
+    public let evidenceCount: Int
+    public let note: String
+
+    public init(
+        id: String,
+        title: String,
+        current: SkillDimensionState,
+        target: SkillDimensionState,
+        confidence: WeaknessConfidence,
+        evidenceCount: Int,
+        note: String
+    ) {
+        self.id = id
+        self.title = title
+        self.current = current
+        self.target = target
+        self.confidence = confidence
+        self.evidenceCount = evidenceCount
+        self.note = note
+    }
+}
+
+public struct WeaknessAssessment: Identifiable, Equatable, Sendable {
+    public let id: UUID
+    public let category: WeaknessCategory
+    public let title: String
+    public let summary: String
+    public let severity: WeaknessSeverity
+    public let confidence: WeaknessConfidence
+    public let lifecycleState: WeaknessLifecycleState
+    public let supportingSignals: [String]
+    public let targetSkillIDs: [String]
+    public let recommendedDrill: PracticeDrillFamily
+    public let rationale: String
+
+    public init(
+        id: UUID = UUID(),
+        category: WeaknessCategory,
+        title: String,
+        summary: String,
+        severity: WeaknessSeverity,
+        confidence: WeaknessConfidence,
+        lifecycleState: WeaknessLifecycleState,
+        supportingSignals: [String],
+        targetSkillIDs: [String],
+        recommendedDrill: PracticeDrillFamily,
+        rationale: String
+    ) {
+        self.id = id
+        self.category = category
+        self.title = title
+        self.summary = summary
+        self.severity = severity
+        self.confidence = confidence
+        self.lifecycleState = lifecycleState
+        self.supportingSignals = supportingSignals
+        self.targetSkillIDs = targetSkillIDs
+        self.recommendedDrill = recommendedDrill
+        self.rationale = rationale
+    }
+}
+
+public struct PracticeBlock: Identifiable, Equatable, Sendable {
+    public let id: UUID
+    public let kind: PracticeBlockKind
+    public let title: String
+    public let detail: String
+    public let durationSeconds: Int
+    public let drillFamily: PracticeDrillFamily?
+    public let targetSkillIDs: [String]
+
+    public init(
+        id: UUID = UUID(),
+        kind: PracticeBlockKind,
+        title: String,
+        detail: String,
+        durationSeconds: Int,
+        drillFamily: PracticeDrillFamily?,
+        targetSkillIDs: [String]
+    ) {
+        self.id = id
+        self.kind = kind
+        self.title = title
+        self.detail = detail
+        self.durationSeconds = durationSeconds
+        self.drillFamily = drillFamily
+        self.targetSkillIDs = targetSkillIDs
+    }
+}
+
+public struct PracticeSessionPlan: Equatable, Sendable {
+    public let primaryFocusTitle: String
+    public let rationale: String
+    public let blocks: [PracticeBlock]
+    public let followUp: String
+
+    public init(
+        primaryFocusTitle: String,
+        rationale: String,
+        blocks: [PracticeBlock],
+        followUp: String
+    ) {
+        self.primaryFocusTitle = primaryFocusTitle
+        self.rationale = rationale
+        self.blocks = blocks
+        self.followUp = followUp
+    }
+}
+
+public struct LearningModelSnapshot: Equatable, Sendable {
+    public var skillNodes: [SkillNode]
+    public var skillEdges: [SkillEdge]
+    public var studentStates: [StudentSkillState]
+    public var weaknesses: [WeaknessAssessment]
+    public var primaryWeakness: WeaknessAssessment?
+    public var recommendedSession: PracticeSessionPlan?
+
+    public init(
+        skillNodes: [SkillNode] = [],
+        skillEdges: [SkillEdge] = [],
+        studentStates: [StudentSkillState] = [],
+        weaknesses: [WeaknessAssessment] = [],
+        primaryWeakness: WeaknessAssessment? = nil,
+        recommendedSession: PracticeSessionPlan? = nil
+    ) {
+        self.skillNodes = skillNodes
+        self.skillEdges = skillEdges
+        self.studentStates = studentStates
+        self.weaknesses = weaknesses
+        self.primaryWeakness = primaryWeakness
+        self.recommendedSession = recommendedSession
+    }
+}
+
 public struct CaptureDashboardState: Equatable, Sendable {
     public var permissionState: InputMonitoringPermissionState
     public var captureActivityState: CaptureActivityState
     public var isPaused: Bool
     public var tapHealth: TapHealth
     public var profileSnapshot: TypingProfileSnapshot
+    public var learningModel: LearningModelSnapshot
     public var advancedDiagnostics: AggregateTypingMetrics
     public var trustState: TrustState
     public var exclusionStatus: ExclusionStatus
@@ -667,6 +949,7 @@ public struct CaptureDashboardState: Equatable, Sendable {
         isPaused: Bool = false,
         tapHealth: TapHealth = TapHealth(),
         profileSnapshot: TypingProfileSnapshot = TypingProfileSnapshot(),
+        learningModel: LearningModelSnapshot = LearningModelSnapshot(),
         advancedDiagnostics: AggregateTypingMetrics = AggregateTypingMetrics(),
         trustState: TrustState = TrustState(),
         exclusionStatus: ExclusionStatus = ExclusionStatus(),
@@ -679,6 +962,7 @@ public struct CaptureDashboardState: Equatable, Sendable {
         self.isPaused = isPaused
         self.tapHealth = tapHealth
         self.profileSnapshot = profileSnapshot
+        self.learningModel = learningModel
         self.advancedDiagnostics = advancedDiagnostics
         self.trustState = trustState
         self.exclusionStatus = exclusionStatus

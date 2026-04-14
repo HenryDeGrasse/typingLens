@@ -35,6 +35,20 @@ struct MenuBarExtraView: View {
                 MenuMetricRow(label: "Excluded events", value: "\(state.profileSnapshot.today.excludedEventCount)")
             }
 
+            if let primaryWeakness = state.learningModel.primaryWeakness {
+                Divider()
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Current focus")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Text(primaryWeakness.title)
+                        .font(.subheadline.weight(.medium))
+                    Text(displayName(for: primaryWeakness.recommendedDrill))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+
             if let lastObserved = state.exclusionStatus.lastObservedApplication {
                 Divider()
                 VStack(alignment: .leading, spacing: 4) {
@@ -168,6 +182,23 @@ struct MenuBarExtraView: View {
 
     private func percentString(_ value: Double) -> String {
         "\(String(format: "%.1f", value * 100))%"
+    }
+
+    private func displayName(for family: PracticeDrillFamily) -> String {
+        switch family {
+        case .sameHandLadders:
+            return "Same-Hand Ladders"
+        case .reachAndReturn:
+            return "Reach & Return"
+        case .alternationRails:
+            return "Alternation Rails"
+        case .accuracyReset:
+            return "Accuracy Reset"
+        case .meteredFlow:
+            return "Metered Flow"
+        case .mixedTransfer:
+            return "Mixed Transfer"
+        }
     }
 }
 

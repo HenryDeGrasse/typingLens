@@ -26,6 +26,9 @@ struct ContentView: View {
                 controlsCard
                 profileOverviewCard
                 insightCard
+                weaknessesCard
+                practicePlanCard
+                skillStateCard
                 rhythmAndFlowRow
                 accuracyAndReachRow
                 exclusionsCard
@@ -43,10 +46,10 @@ struct ContentView: View {
     private var heroCard: some View {
         GroupBox {
             VStack(alignment: .leading, spacing: 12) {
-                Text("Typing Lens · M3 Local Profile Engine")
+                Text("Typing Lens · M4 Skill Graph + Practice Prescription")
                     .font(.system(size: 28, weight: .bold))
 
-                Text("Typing Lens now focuses on a privacy-safer local typing profile built from rhythm, flow, correction, and reach. The app keeps the same listen-only permission model, but its main product UI no longer depends on persisted literal n-grams or raw text.")
+                Text("Typing Lens now pairs its local profile engine with a first deterministic learning model. The app estimates skill state from rhythm, flow, correction, and reach; detects likely weaknesses; and proposes a small explainable practice session without storing raw text or persistent literal n-grams.")
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
 
@@ -84,7 +87,7 @@ struct ContentView: View {
                     .foregroundStyle(.primary)
                     .fixedSize(horizontal: false, vertical: true)
 
-                Text("Product source of truth: content-free local profile summaries. Not persisted: raw typed text, raw preview text, raw event streams, or persistent literal n-grams.")
+                Text("Product source of truth: content-free local profile summaries plus a deterministic skill graph and learner state model. Not persisted: raw typed text, raw preview text, raw event streams, or persistent literal n-grams.")
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
 
@@ -160,6 +163,123 @@ struct ContentView: View {
                             .fixedSize(horizontal: false, vertical: true)
                     }
                     Divider()
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
+    private var weaknessesCard: some View {
+        GroupBox("Current Weakness Model") {
+            VStack(alignment: .leading, spacing: 12) {
+                Text("M4 interprets the M3 profile through a small hand-authored skill graph. Passive typing creates candidate weaknesses, and the system recommends one primary focus at a time instead of trying to blend multiple weak spots into one session.")
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                if state.learningModel.weaknesses.isEmpty {
+                    Text("No strong weakness candidates yet. Keep typing in non-excluded apps so the learner model can build better evidence.")
+                        .foregroundStyle(.secondary)
+                } else {
+                    ForEach(state.learningModel.weaknesses) { weakness in
+                        VStack(alignment: .leading, spacing: 6) {
+                            HStack {
+                                Text(weakness.title)
+                                    .font(.headline)
+                                Spacer()
+                                Text("\(displayName(for: weakness.confidence)) confidence · \(displayName(for: weakness.severity))")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                            Text(weakness.summary)
+                                .fixedSize(horizontal: false, vertical: true)
+                            Text("Why: \(weakness.supportingSignals.joined(separator: " · "))")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                            Text("Recommended drill family: \(displayName(for: weakness.recommendedDrill))")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                        Divider()
+                    }
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
+    private var practicePlanCard: some View {
+        GroupBox("Recommended Next Practice") {
+            VStack(alignment: .leading, spacing: 12) {
+                Text("The first M4 slice keeps practice deterministic and explainable: confirm the weakness, run one drill family, then check immediate and later transfer.")
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                if let session = state.learningModel.recommendedSession,
+                   let primaryWeakness = state.learningModel.primaryWeakness {
+                    Text(session.primaryFocusTitle)
+                        .font(.title3.weight(.semibold))
+
+                    Text(primaryWeakness.rationale)
+                        .fixedSize(horizontal: false, vertical: true)
+
+                    ForEach(session.blocks) { block in
+                        VStack(alignment: .leading, spacing: 4) {
+                            HStack {
+                                Text(block.title)
+                                    .font(.headline)
+                                Spacer()
+                                Text(block.durationSeconds > 0 ? "\(block.durationSeconds)s" : "later")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                            Text(block.detail)
+                                .foregroundStyle(.secondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                        Divider()
+                    }
+
+                    Text(session.followUp)
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                } else {
+                    Text("No primary practice session is recommended yet. The app needs a little more evidence before it should prescribe a focused drill.")
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
+    private var skillStateCard: some View {
+        GroupBox("Learner State Snapshot") {
+            VStack(alignment: .leading, spacing: 12) {
+                Text("Each skill stores a small continuous state: control, automaticity, consistency, and stability. This is the long-term scaffold for future probes, drills, and transfer tracking.")
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                if prioritizedStudentStates.isEmpty {
+                    Text("No learner-state rows yet.")
+                        .foregroundStyle(.secondary)
+                } else {
+                    ForEach(prioritizedStudentStates, id: \.id) { skillState in
+                        VStack(alignment: .leading, spacing: 4) {
+                            HStack {
+                                Text(skillState.title)
+                                    .font(.headline)
+                                Spacer()
+                                Text(displayName(for: skillState.confidence))
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                            Text("Control \(skillValueLabel(skillState.current.control)) · Auto \(skillValueLabel(skillState.current.automaticity)) · Consistency \(skillValueLabel(skillState.current.consistency)) · Stability \(skillValueLabel(skillState.current.stability))")
+                                .foregroundStyle(.primary)
+                            Text(skillState.note)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                        Divider()
+                    }
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -358,13 +478,13 @@ struct ContentView: View {
                     HStack(alignment: .top, spacing: 16) {
                         NGramInsightsCard(
                             title: "Transient top bigrams",
-                            subtitle: "Available for local inspection only. Not persisted in M3 profile storage.",
+                            subtitle: "Available for local inspection only. Not persisted in the M4 learner model.",
                             metrics: state.advancedDiagnostics.topBigrams(limit: 6)
                         )
 
                         NGramInsightsCard(
                             title: "Transient top trigrams",
-                            subtitle: "Secondary diagnostics only. Not persisted in M3 profile storage.",
+                            subtitle: "Secondary diagnostics only. Not persisted in the M4 learner model.",
                             metrics: state.advancedDiagnostics.topTrigrams(limit: 6)
                         )
                     }
@@ -547,6 +667,15 @@ struct ContentView: View {
         }
     }
 
+    private var prioritizedStudentStates: [StudentSkillState] {
+        state.learningModel.studentStates
+            .sorted {
+                averageSkillValue($0.current) < averageSkillValue($1.current)
+            }
+            .prefix(6)
+            .map { $0 }
+    }
+
     private func addManualBundleIdentifier() {
         let trimmedValue = manualBundleIdentifier.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedValue.isEmpty else { return }
@@ -576,6 +705,53 @@ struct ContentView: View {
 
     private func baselineFootnote(for baselineValue: Double) -> String {
         baselineValue > 0 ? "Baseline \(String(format: "%.1f", baselineValue))" : "Baseline building"
+    }
+
+    private func averageSkillValue(_ value: SkillDimensionState) -> Double {
+        (value.control + value.automaticity + value.consistency + value.stability) / 4.0
+    }
+
+    private func skillValueLabel(_ value: Double) -> String {
+        "\(Int((value * 100).rounded()))%"
+    }
+
+    private func displayName(for confidence: WeaknessConfidence) -> String {
+        switch confidence {
+        case .low:
+            return "Low"
+        case .medium:
+            return "Medium"
+        case .high:
+            return "High"
+        }
+    }
+
+    private func displayName(for severity: WeaknessSeverity) -> String {
+        switch severity {
+        case .mild:
+            return "Mild"
+        case .moderate:
+            return "Moderate"
+        case .strong:
+            return "Strong"
+        }
+    }
+
+    private func displayName(for family: PracticeDrillFamily) -> String {
+        switch family {
+        case .sameHandLadders:
+            return "Same-Hand Ladders"
+        case .reachAndReturn:
+            return "Reach & Return"
+        case .alternationRails:
+            return "Alternation Rails"
+        case .accuracyReset:
+            return "Accuracy Reset"
+        case .meteredFlow:
+            return "Metered Flow"
+        case .mixedTransfer:
+            return "Mixed Transfer"
+        }
     }
 }
 

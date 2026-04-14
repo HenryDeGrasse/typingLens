@@ -1,28 +1,45 @@
-# Typing Lens · M3 Local Profile Engine
+# Typing Lens · M4 Skill Graph + Practice Prescription Prototype
 
 Typing Lens is a local-first typing coach.
 
-This repo currently contains a small macOS prototype focused on trustworthy, privacy-safer typing diagnostics. The app still uses a listen-only keyboard event tap after explicit macOS approval, but the main product UI now focuses on a local typing profile instead of persisted literal n-grams or raw text.
+This repo currently contains a macOS prototype focused on trustworthy, privacy-safer typing diagnostics and the first deterministic coaching layer. The app still uses a listen-only keyboard event tap after explicit macOS approval, but the main product UI now combines a local typing profile with a small skill graph, weakness detection, and an explainable practice prescription plan.
 
-## What changed from M2
+## Milestone progression
 
-M2 proved that Typing Lens could capture aggregate-first typing diagnostics with exclusions and trustable local behavior.
+- **M1:** trustable capture demo
+- **M2:** aggregate diagnostics prototype
+- **M3:** local profile engine for rhythm, flow, correction, and reach
+- **M4:** deterministic skill graph + weakness model + practice prescription plan
 
-M3 upgrades that into a **local profile engine**:
+## What changed in M4
 
-- the main UI now emphasizes **rhythm, flow, correction, and reach**
-- the app captures both key-down and key-up so it can estimate **flight** and **dwell** timing
-- it persists **content-free daily profile summaries** instead of persisted literal bigram/trigram tables
-- bigrams and trigrams are demoted into **transient advanced diagnostics only**
-- the app surfaces **baseline-building** vs **baseline-ready** states
-- it surfaces **secure input blocked** when macOS says secure event input is active
+M3 established a content-free local profile.
+
+M4 adds a deterministic interpretation layer above that profile:
+
+- a small hand-authored skill graph
+- learner-state snapshots for core typing skills
+- weakness candidates such as:
+  - same-hand sequences
+  - reaches
+  - accuracy and recovery
+  - hand handoffs
+  - flow consistency
+- a one-primary-weakness recommendation strategy
+- a deterministic next-practice session plan with:
+  - confirmatory probe
+  - drill blocks
+  - post-check
+  - transfer check
+
+The current M4 slice is still MVP-sized: it explains and prescribes, but it does not yet run a full in-app drill runtime.
 
 ## What this prototype does
 
 - shows a pre-permission explainer UI
 - requests/guides Input Monitoring approval
 - installs a listen-only `CGEventTap` only after permission is granted
-- shows clearer capture states:
+- shows clear capture states:
   - needs permission
   - permission denied
   - recording
@@ -30,47 +47,57 @@ M3 upgrades that into a **local profile engine**:
   - secure input blocked
   - tap unavailable
 - keeps built-in and manual excluded apps
-- builds a local typing profile using:
-  - flight timing summaries
-  - dwell timing summaries
+- builds a local typing profile from:
+  - dwell timing
+  - flight timing
   - pause distributions
   - burst distributions
-  - correction burst summaries
-  - same-hand vs cross-hand timing
-  - approximate reach-distance timing buckets
-- shows a profile-first UI with:
-  - overview
-  - rhythm
-  - flow
-  - accuracy
-  - reach
-  - what changed
-  - trust + tap health
+  - correction behavior
+  - reach / motor friction buckets
+- treats common real-world cases more carefully:
+  - long thinking pauses are treated as flow events, not rhythm transitions
+  - holding down backspace is tracked as a held-delete burst instead of polluting rhythm
+  - navigation keys like arrow keys are not mixed into the main typing profile
+- builds an M4 learning snapshot with:
+  - skill graph nodes and edges
+  - learner-state summaries
+  - weakness candidates
+  - a recommended next practice session plan
 - keeps a macOS menu bar extra for quick status/actions
 - keeps advanced literal n-gram diagnostics only as a transient, demoted section
-- keeps a raw preview only for debug validation in DEBUG builds
+- keeps a raw preview only for DEBUG-only local validation
 
 ## What this prototype does not do
 
 - no raw typed text persistence
 - no raw event-stream persistence
-- no persistent literal bigram/trigram storage in the main M3 profile
+- no persistent literal bigram/trigram storage in the learner model
 - no network activity
 - no sync/backend/account system
-- no coaching or practice generation yet
+- no full interactive drill runtime yet
+- no AI coaching layer yet
 - no web UI yet
 
 ## Repo structure
 
 ```text
 apps/mac/               Runnable macOS app package + app bundle metadata
-swift/Packages/Core/    Small pure shared Swift types and profile/dashboard state models
-swift/Packages/Capture/ Permission flow, tap management, normalization, exclusions,
-                        profile aggregation, and local summary stores
+swift/Packages/Core/    Pure shared Swift types, profile models, and learner-model schemas
+swift/Packages/Capture/ Permission flow, tap management, normalization, profile engine,
+                        skill-graph interpretation, and local summary stores
+docs/                   Vision, roadmap, ownership, M4 graph/rule-engine design,
+                        and long-term architecture
 packages/               Placeholder for future TypeScript/web packages
-docs/                   Vision, ownership lanes, and roadmap
 scripts/                Local build/run helpers
 ```
+
+## Key docs
+
+- `docs/m4-skill-graph.md` — M4 skill graph, schema, and rule engine
+- `docs/architecture.md` — long-term architecture and AI layering plan
+- `docs/vision.md` — short product vision
+- `docs/roadmap.md` — milestone roadmap
+- `docs/ownership.md` — ownership lanes
 
 ## Requirements
 
@@ -110,18 +137,20 @@ If you only want to build:
 6. Confirm the UI shows:
    - permission = `granted`
    - capture = `recording`
-   - trust panel shows local profile storage paths
+   - a profile overview
+   - a weakness model section
+   - a recommended next practice section
 7. Open a non-excluded app such as TextEdit or Notes.
 8. Type a short paragraph, pause a few times to think, use backspace a few times, and once try holding backspace long enough to bulk-delete part of the text.
 9. Return to Typing Lens and confirm these update:
    - included keydowns
    - backspace density
-   - sessions / burst length
-   - rhythm cards (flight / dwell)
-   - flow histograms (pause / burst)
-   - correction section, including held delete bursts if you tried a bulk delete
+   - held delete bursts
+   - rhythm cards
+   - flow histograms
+   - correction section
    - reach section
-   - last included event time
+   - weakness model / recommended practice plan
 10. Open Terminal and type a few keys.
 11. Return to Typing Lens and confirm:
    - profile counts did **not** increase from those Terminal keystrokes
@@ -135,25 +164,27 @@ If you only want to build:
 16. Click **Reset Profile + Diagnostics** and verify profile summaries, transient diagnostics, and debug state are cleared.
 17. Open the Typing Lens icon in the macOS menu bar and confirm you can:
    - see capture status at a glance
+   - see the current primary weakness if one is available
    - open the main app window
    - pause/resume capture
    - exclude the last observed app
 18. Optional persistence check:
    - inspect `~/Library/Application Support/ai.gauntlet.typinglens/typing-profile-store.json`
-   - confirm it contains profile summaries / histograms only
-   - confirm it does **not** contain raw preview text or literal n-gram strings from typing
+   - inspect `~/Library/Application Support/ai.gauntlet.typinglens/manual-excluded-apps.json`
+   - confirm the stores contain summary/profile data and app identifiers only
+   - confirm they do **not** contain raw preview text or persisted literal n-gram strings
 
 ## Privacy and storage notes
 
-- The product-facing UI is profile-first and content-free.
-- The persisted M3 store is a local summary store of counts and histograms.
+- The product-facing UI is profile-first and learner-model-first.
+- The persisted store is a local summary store of counts and histograms.
 - The app does **not** write raw typed text to disk.
 - The app does **not** write raw event streams to disk.
 - The app does **not** persist the debug raw preview.
-- The app does **not** persist literal bigram/trigram tables in the main M3 profile store.
+- The app does **not** persist literal bigram/trigram tables in the M4 learner model.
 - The app does **not** send captured data over the network.
 - Manual exclusions are stored separately as app identifiers only.
-- On launch, the app clears the old M2 aggregate store so literal n-gram persistence does not carry forward into M3.
+- On launch, the app clears the old M2 aggregate store so literal n-gram persistence does not carry forward into later milestones.
 
 ## Current trust model
 
@@ -169,23 +200,6 @@ Typing Lens currently does **not** store:
 - raw event streams
 - persisted literal n-gram diagnostics
 
-## Current exclusions
-
-The app currently ignores a first-pass hardcoded set of bundle IDs including:
-
-- Terminal
-- iTerm
-- 1Password
-- Bitwarden
-- LastPass
-- Microsoft Remote Desktop
-- Parallels Desktop
-- VMware Fusion
-- TeamViewer
-- AnyDesk
-
-You can also add your own exclusions locally from the app UI. Manual exclusions contain app identifiers only, not captured text.
-
 ## Development caveat
 
 The build helper uses ad-hoc signing for a local demo bundle. After a rebuild, macOS may occasionally treat the app as changed and require you to re-confirm Input Monitoring access.
@@ -199,6 +213,4 @@ If permission appears stuck:
 
 ## Current milestone
 
-- **M3:** local profile engine + baseline UI
-
-See `docs/vision.md`, `docs/ownership.md`, and `docs/roadmap.md` for the intended longer-term direction.
+- **M4:** deterministic skill graph + weakness model + practice prescription prototype

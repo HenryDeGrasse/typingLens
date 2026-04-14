@@ -42,6 +42,7 @@ public final class CaptureService: ObservableObject {
 
         self.state = CaptureDashboardState(
             profileSnapshot: profileEngine.currentSnapshot(),
+            learningModel: LearningModelEngine.build(from: profileEngine.currentSnapshot()),
             advancedDiagnostics: advancedDiagnosticsAggregator.metrics,
             trustState: TrustState(
                 secureInputState: .unavailable,
@@ -422,6 +423,7 @@ public final class CaptureService: ObservableObject {
     private func refreshDerivedStateAndHealth() {
         state.captureActivityState = currentCaptureActivityState()
         state.profileSnapshot = profileEngine.currentSnapshot()
+        state.learningModel = LearningModelEngine.build(from: state.profileSnapshot)
         state.advancedDiagnostics = advancedDiagnosticsAggregator.metrics
         state.tapHealth = TapHealth(
             isInstalled: eventTap.isInstalled,

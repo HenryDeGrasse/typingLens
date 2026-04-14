@@ -2,4 +2,4 @@
 
 Typing Lens is a local-first typing coach.
 
-This milestone is the first local profile engine: observe typing with explicit macOS permission, model rhythm/flow/correction/reach as content-free summaries, and keep any raw preview debug-only and in memory only.
+The product should earn trust first, build a content-free learner model second, and only then become a richer coach. The long-term goal is a privacy-safe skill graph + learner-state system that can explain current weaknesses, prescribe practice, and measure transfer without storing raw typed text.
