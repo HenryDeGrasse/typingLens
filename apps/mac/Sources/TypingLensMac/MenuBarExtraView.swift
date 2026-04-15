@@ -18,6 +18,7 @@ struct MenuBarExtraView: View {
                     .font(.headline)
                 Label(captureLabel, systemImage: menuBarSymbolName)
                     .foregroundStyle(captureTint)
+                    .accessibilityLabel("Capture status: \(captureLabel)")
                 Text(permissionLine)
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -25,6 +26,7 @@ struct MenuBarExtraView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
+            .accessibilityElement(children: .contain)
 
             Divider()
 
@@ -74,6 +76,7 @@ struct MenuBarExtraView: View {
                 captureService.togglePause()
             }
             .disabled(state.permissionState != .granted || !state.tapHealth.isInstalled)
+            .accessibilityHint(state.isPaused ? "Resumes the listen-only keyboard tap" : "Pauses the listen-only keyboard tap")
 
             Button("Exclude Last Observed App") {
                 captureService.addManualExclusionFromLastObservedApp()
@@ -82,15 +85,24 @@ struct MenuBarExtraView: View {
                 state.exclusionStatus.lastObservedApplication?.bundleIdentifier == nil
                     || state.exclusionStatus.isLastObservedApplicationExcluded
             )
+            .accessibilityHint("Adds the most recently observed app to your manual exclusion list")
 
             Button("Re-check Access") {
                 captureService.refreshPermissionState()
                 captureService.startTapIfPossible()
             }
+            .accessibilityHint("Re-queries macOS Input Monitoring permission and re-installs the tap if granted")
 
             Button("Open Input Monitoring Settings") {
                 captureService.openInputMonitoringSettings()
             }
+            .accessibilityHint("Opens System Settings to manage Input Monitoring permission")
+
+            Button("Inspect Local Data...") {
+                openWindow(id: "data-inspector")
+                NSApp.activate(ignoringOtherApps: true)
+            }
+            .accessibilityHint("Opens a window to inspect, export, or delete locally persisted files")
 
             Divider()
 

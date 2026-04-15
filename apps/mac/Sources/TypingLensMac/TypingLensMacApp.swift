@@ -1,16 +1,28 @@
 import Capture
 import SwiftUI
 
+private let onboardingCompletedDefaultsKey = "ai.gauntlet.typinglens.onboardingCompleted"
+
 @main
 struct TypingLensMacApp: App {
     @StateObject private var captureService = CaptureService()
+    @State private var isShowingOnboarding: Bool = !UserDefaults.standard.bool(forKey: onboardingCompletedDefaultsKey)
 
     var body: some Scene {
         WindowGroup("Typing Lens", id: "main") {
             ContentView(captureService: captureService)
                 .frame(minWidth: 920, minHeight: 720)
+                .sheet(isPresented: $isShowingOnboarding, onDismiss: persistOnboardingDismissal) {
+                    OnboardingView(captureService: captureService, isPresented: $isShowingOnboarding)
+                }
         }
         .windowResizability(.contentSize)
+
+        WindowGroup("Local Data", id: "data-inspector") {
+            DataInspectorView(captureService: captureService)
+        }
+        .windowResizability(.contentSize)
+        .defaultSize(width: 640, height: 460)
 
         MenuBarExtra {
             MenuBarExtraView(captureService: captureService)
@@ -36,6 +48,10 @@ struct TypingLensMacApp: App {
         case .tapUnavailable:
             return "tap unavailable"
         }
+    }
+
+    private func persistOnboardingDismissal() {
+        UserDefaults.standard.set(true, forKey: onboardingCompletedDefaultsKey)
     }
 
     private var menuBarSymbolName: String {

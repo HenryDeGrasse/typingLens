@@ -5,6 +5,7 @@ import Carbon
 #endif
 import Core
 import Foundation
+import os
 
 @MainActor
 public final class CaptureService: ObservableObject {
@@ -26,11 +27,11 @@ public final class CaptureService: ObservableObject {
     private let modelVersionStamp = PracticeEvaluationEngine.currentModelVersionStamp
 
     private var manualExcludedApplications: [ExcludedApplication]
-    private var activationObserver: NSObjectProtocol?
-    private var backgroundObserver: NSObjectProtocol?
-    private var terminationObserver: NSObjectProtocol?
-    private var secureInputPollTimer: Timer?
-    private var practiceTimer: Timer?
+    nonisolated(unsafe) private var activationObserver: NSObjectProtocol?
+    nonisolated(unsafe) private var backgroundObserver: NSObjectProtocol?
+    nonisolated(unsafe) private var terminationObserver: NSObjectProtocol?
+    nonisolated(unsafe) private var secureInputPollTimer: Timer?
+    nonisolated(unsafe) private var practiceTimer: Timer?
     private var lastRuntimeNote: String?
     private var exclusionNote: String?
     private var lastObservedApplication: ObservedApplication?
@@ -41,12 +42,21 @@ public final class CaptureService: ObservableObject {
     private var currentPracticeDeviceClass = "unknown-device"
 
     public init() {
-        try? legacyAggregateStore.clear()
+        do {
+            try legacyAggregateStore.clear()
+        } catch {
+            Self.logger.error("Could not clear legacy aggregate store: \(error.localizedDescription, privacy: .public)")
+        }
         evidenceStore.ensureModelVersionStamp(modelVersionStamp)
 
         let manualExcludedApplications = manualExclusionStore.load()
             .sorted(using: KeyPathComparator(\.displayName, comparator: .localizedStandard))
         self.manualExcludedApplications = manualExcludedApplications
+
+        let initialPersistenceWarning = [
+            profileEngine.lastPersistenceError,
+            evidenceStore.lastPersistenceError
+        ].compactMap { $0 }.joined(separator: " ").nonEmptyOrNil
 
         self.state = CaptureDashboardState(
             profileSnapshot: profileEngine.currentSnapshot(),
@@ -64,7 +74,8 @@ public final class CaptureService: ObservableObject {
                 keyboardDeviceClass: currentPracticeDeviceClass,
                 storesRawText: false,
                 storesLiteralNGrams: false,
-                note: "Typing Lens stores local profile summaries in JSON and aggregate-only coaching evidence in SQLite. It does not store raw typed text, raw practice responses, or raw event streams."
+                note: "Typing Lens stores local profile summaries in JSON and aggregate-only coaching evidence in SQLite. It does not store raw typed text, raw practice responses, or raw event streams.",
+                persistenceWarning: initialPersistenceWarning
             ),
             exclusionStatus: ExclusionStatus(
                 builtInExcludedApplications: ApplicationExclusionPolicy.builtInExcludedApplications,
@@ -78,6 +89,18 @@ public final class CaptureService: ObservableObject {
         refreshPermissionState()
         startTapIfPossible()
     }
+
+    deinit {
+        // Notification observers are retained by NotificationCenter until removed.
+        // Removing here is safe because NotificationCenter APIs are thread-safe.
+        if let activationObserver { NotificationCenter.default.removeObserver(activationObserver) }
+        if let backgroundObserver { NotificationCenter.default.removeObserver(backgroundObserver) }
+        if let terminationObserver { NotificationCenter.default.removeObserver(terminationObserver) }
+        secureInputPollTimer?.invalidate()
+        practiceTimer?.invalidate()
+    }
+
+    private static let logger = Logger(subsystem: "ai.gauntlet.typinglens", category: "CaptureService")
 
     public func requestPermissionFlow() {
         _ = InputMonitoringPermissionManager.requestAccess()
@@ -191,6 +214,87 @@ public final class CaptureService: ObservableObject {
         startTapIfPossible()
     }
 
+    public struct StoreFileDescriptor: Identifiable, Sendable {
+        public let id: String
+        public let label: String
+        public let path: String
+        public let exists: Bool
+        public let sizeBytes: Int64?
+        public let lastModified: Date?
+    }
+
+    public func currentStoreFileDescriptors() -> [StoreFileDescriptor] {
+        let fileManager = FileManager.default
+        let paths: [(String, String, String)] = [
+            ("profile", "Typing profile (JSON)", profileEngine.persistenceDescription),
+            ("exclusions", "Manual exclusions (JSON)", manualExclusionStore.persistenceDescription),
+            ("evidence", "Practice evidence (SQLite)", evidenceStore.persistenceDescription)
+        ]
+
+        return paths.map { id, label, path in
+            let attributes = (try? fileManager.attributesOfItem(atPath: path)) ?? [:]
+            let size = (attributes[.size] as? NSNumber)?.int64Value
+            let modified = attributes[.modificationDate] as? Date
+            return StoreFileDescriptor(
+                id: id,
+                label: label,
+                path: path,
+                exists: fileManager.fileExists(atPath: path),
+                sizeBytes: size,
+                lastModified: modified
+            )
+        }
+    }
+
+    /// Copy all local stores into the destination directory. Returns the per-file destinations actually written.
+    @discardableResult
+    public func exportAllStores(to destinationDirectory: URL) throws -> [URL] {
+        let fileManager = FileManager.default
+        try fileManager.createDirectory(at: destinationDirectory, withIntermediateDirectories: true)
+
+        var written: [URL] = []
+        for descriptor in currentStoreFileDescriptors() where descriptor.exists {
+            let source = URL(fileURLWithPath: descriptor.path)
+            let target = destinationDirectory.appendingPathComponent(source.lastPathComponent)
+            if fileManager.fileExists(atPath: target.path) {
+                try fileManager.removeItem(at: target)
+            }
+            try fileManager.copyItem(at: source, to: target)
+            written.append(target)
+        }
+        return written
+    }
+
+    /// Wipe every locally persisted store. Profile snapshots, manual exclusions, and the SQLite evidence ledger are removed.
+    public func deleteAllStoredData() throws {
+        clearPracticeRuntime()
+        passiveSliceRecorder.reset()
+        debugBuffer.reset()
+        try profileEngine.reset()
+        try? legacyAggregateStore.clear()
+        try manualExclusionStore.clear()
+        manualExcludedApplications = []
+
+        let fileManager = FileManager.default
+        let evidencePath = evidenceStore.persistenceDescription
+        if fileManager.fileExists(atPath: evidencePath) {
+            try fileManager.removeItem(atPath: evidencePath)
+        }
+        let walPath = evidencePath + "-wal"
+        if fileManager.fileExists(atPath: walPath) {
+            try? fileManager.removeItem(atPath: walPath)
+        }
+        let shmPath = evidencePath + "-shm"
+        if fileManager.fileExists(atPath: shmPath) {
+            try? fileManager.removeItem(atPath: shmPath)
+        }
+
+        unsavedProfileMutations = 0
+        lastRuntimeNote = nil
+        exclusionNote = "All local data has been deleted."
+        refreshDerivedStateAndHealth()
+    }
+
     public func resetCaptureData() {
         clearPracticeRuntime()
         passiveSliceRecorder.reset()
@@ -206,9 +310,13 @@ public final class CaptureService: ObservableObject {
 
         do {
             try profileEngine.reset()
-            try? legacyAggregateStore.clear()
         } catch {
             lastRuntimeNote = "Could not clear profile store: \(error.localizedDescription)"
+        }
+        do {
+            try legacyAggregateStore.clear()
+        } catch {
+            Self.logger.error("Could not clear legacy aggregate store during reset: \(error.localizedDescription, privacy: .public)")
         }
 
         advancedDiagnosticsAggregator.reset()
@@ -560,7 +668,8 @@ public final class CaptureService: ObservableObject {
             keyboardDeviceClass: currentPracticeDeviceClass,
             storesRawText: false,
             storesLiteralNGrams: false,
-            note: "Typing Lens stores content-free daily profile summaries locally, plus aggregate-only coaching evidence in SQLite. Prompt text, typed practice responses, raw preview text, and raw event streams are not persisted."
+            note: "Typing Lens stores content-free daily profile summaries locally, plus aggregate-only coaching evidence in SQLite. Prompt text, typed practice responses, raw preview text, and raw event streams are not persisted.",
+            persistenceWarning: composedPersistenceWarning()
         )
         refreshExclusionState()
     }
@@ -749,6 +858,14 @@ public final class CaptureService: ObservableObject {
             baselineSlices: baselineSlices
         )
 
+        let passiveTransferStatusNote = passiveTransferStatusNote(
+            for: artifact.weakness,
+            keyboardLayoutID: keyboardLayoutID,
+            keyboardDeviceClass: keyboardDeviceClass,
+            baselineSliceCount: baselineSlices.count,
+            createdTicket: transferTicket != nil
+        )
+
         let sessionRecord = PracticeSessionSummaryRecord(
             id: sessionID,
             startedAt: artifact.startedAt,
@@ -761,6 +878,7 @@ public final class CaptureService: ObservableObject {
             immediateOutcome: evaluations.immediateOutcome,
             nearTransferOutcome: evaluations.nearTransferOutcome,
             passiveTransferTicketID: transferTicket?.id,
+            passiveTransferStatusNote: passiveTransferStatusNote,
             updateMode: .shadow,
             keyboardLayoutID: keyboardLayoutID,
             keyboardDeviceClass: keyboardDeviceClass,
@@ -880,6 +998,32 @@ public final class CaptureService: ObservableObject {
         )
     }
 
+    private func passiveTransferStatusNote(
+        for weakness: WeaknessAssessment,
+        keyboardLayoutID: String,
+        keyboardDeviceClass: String,
+        baselineSliceCount: Int,
+        createdTicket: Bool
+    ) -> String {
+        if createdTicket {
+            return "Passive transfer ticket created. The app will wait for cooldown and then look for compatible passive slices."
+        }
+
+        if weakness.category == .flowConsistency {
+            return "Passive transfer tracking is disabled for flow consistency in this tester build because the signal is still too confounded."
+        }
+
+        if keyboardLayoutID == "unknown" || keyboardDeviceClass == "unknown-device" {
+            return "Passive transfer tracking was unavailable because the keyboard layout or device class could not be matched confidently."
+        }
+
+        if baselineSliceCount == 0 {
+            return "Passive transfer ticket was not created because there were no compatible passive baseline slices before the session."
+        }
+
+        return "Passive transfer tracking was not created for this session."
+    }
+
     private func downgradedSeverity(_ severity: WeaknessSeverity) -> WeaknessSeverity {
         switch severity {
         case .strong:
@@ -900,7 +1044,23 @@ public final class CaptureService: ObservableObject {
         case KeyboardEventTapError.runLoopSourceCreationFailed:
             return "Tap was created, but its run loop source failed to initialize."
         default:
-            return "Unexpected tap error: \(String(describing: error))"
+            return "Unexpected tap error: \(error.localizedDescription)"
         }
+    }
+
+    private func composedPersistenceWarning() -> String? {
+        let warnings = [
+            profileEngine.lastPersistenceError,
+            evidenceStore.lastPersistenceError
+        ].compactMap { $0 }
+
+        guard !warnings.isEmpty else { return nil }
+        return warnings.joined(separator: " ")
+    }
+}
+
+private extension String {
+    var nonEmptyOrNil: String? {
+        isEmpty ? nil : self
     }
 }

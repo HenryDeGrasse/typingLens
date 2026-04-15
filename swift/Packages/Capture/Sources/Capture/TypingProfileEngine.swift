@@ -48,7 +48,7 @@ final class TypingProfileEngine {
         burstBoundaryMilliseconds: Double = 750,
         sessionBoundaryMilliseconds: Double = 30_000,
         maxFlightMilliseconds: Double = 2_000,
-        maxStoredDays: Int = 45,
+        maxStoredDays: Int = 90,
         now: Date = Date()
     ) {
         self.store = store
@@ -66,6 +66,10 @@ final class TypingProfileEngine {
 
     var persistenceDescription: String {
         store.persistenceDescription
+    }
+
+    var lastPersistenceError: String? {
+        store.lastPersistenceError
     }
 
     func currentSnapshot() -> TypingProfileSnapshot {

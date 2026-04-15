@@ -12,6 +12,10 @@ enum KeyGeometryMap {
         geometries[keyCode]
     }
 
+    static func keyCode(for character: Character) -> Int64? {
+        keyCodesByCharacter[character]
+    }
+
     static func distanceBucket(from firstKeyCode: Int64, to secondKeyCode: Int64) -> DistanceBucket {
         guard let first = geometry(for: firstKeyCode), let second = geometry(for: secondKeyCode) else {
             return .unknown
@@ -100,5 +104,12 @@ enum KeyGeometryMap {
         49: .init(row: 4.0, column: 6.0, hand: .neutral), // space
         36: .init(row: 2.0, column: 12.5, hand: .neutral), // return
         51: .init(row: 0.0, column: 13.5, hand: .neutral)  // delete/backspace
+    ]
+
+    private static let keyCodesByCharacter: [Character: Int64] = [
+        "a": 0, "b": 11, "c": 8, "d": 2, "e": 14, "f": 3, "g": 5, "h": 4, "i": 34,
+        "j": 38, "k": 40, "l": 37, "m": 46, "n": 45, "o": 31, "p": 35, "q": 12,
+        "r": 15, "s": 1, "t": 17, "u": 32, "v": 9, "w": 13, "x": 7, "y": 16,
+        "z": 6, " ": 49
     ]
 }

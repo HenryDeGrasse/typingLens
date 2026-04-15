@@ -458,6 +458,7 @@ public struct TrustState: Equatable, Sendable {
     public var storesRawText: Bool
     public var storesLiteralNGrams: Bool
     public var note: String
+    public var persistenceWarning: String?
 
     public init(
         secureInputState: SecureInputState = .unavailable,
@@ -469,7 +470,8 @@ public struct TrustState: Equatable, Sendable {
         keyboardDeviceClass: String = "unknown-device",
         storesRawText: Bool = false,
         storesLiteralNGrams: Bool = false,
-        note: String = "Typing Lens stores profile summaries locally and keeps raw preview debug-only in memory."
+        note: String = "Typing Lens stores profile summaries locally and keeps raw preview debug-only in memory.",
+        persistenceWarning: String? = nil
     ) {
         self.secureInputState = secureInputState
         self.profileStorePath = profileStorePath
@@ -481,6 +483,7 @@ public struct TrustState: Equatable, Sendable {
         self.storesRawText = storesRawText
         self.storesLiteralNGrams = storesLiteralNGrams
         self.note = note
+        self.persistenceWarning = persistenceWarning
     }
 }
 
@@ -1529,6 +1532,49 @@ public struct PassiveTransferResultRecord: Identifiable, Equatable, Codable, Sen
     }
 }
 
+public struct PassiveTransferProgressSnapshot: Identifiable, Equatable, Codable, Sendable {
+    public let id: UUID
+    public let ticketID: UUID
+    public let skillID: String
+    public let weakness: WeaknessCategory
+    public let status: PassiveTransferTicketStatus
+    public let compatibleSliceCount: Int
+    public let requiredSliceCount: Int
+    public let incompatibleSliceCount: Int
+    public let earliestEligibleAt: Date
+    public let expiresAt: Date
+    public let keyboardLayoutID: String
+    public let keyboardDeviceClass: String
+
+    public init(
+        id: UUID = UUID(),
+        ticketID: UUID,
+        skillID: String,
+        weakness: WeaknessCategory,
+        status: PassiveTransferTicketStatus,
+        compatibleSliceCount: Int,
+        requiredSliceCount: Int,
+        incompatibleSliceCount: Int,
+        earliestEligibleAt: Date,
+        expiresAt: Date,
+        keyboardLayoutID: String,
+        keyboardDeviceClass: String
+    ) {
+        self.id = id
+        self.ticketID = ticketID
+        self.skillID = skillID
+        self.weakness = weakness
+        self.status = status
+        self.compatibleSliceCount = compatibleSliceCount
+        self.requiredSliceCount = requiredSliceCount
+        self.incompatibleSliceCount = incompatibleSliceCount
+        self.earliestEligibleAt = earliestEligibleAt
+        self.expiresAt = expiresAt
+        self.keyboardLayoutID = keyboardLayoutID
+        self.keyboardDeviceClass = keyboardDeviceClass
+    }
+}
+
 public struct LearnerStateUpdateRecord: Identifiable, Equatable, Codable, Sendable {
     public let id: UUID
     public let createdAt: Date
@@ -1609,6 +1655,7 @@ public struct PracticeSessionSummaryRecord: Identifiable, Equatable, Codable, Se
     public let immediateOutcome: PracticeEvaluationOutcome?
     public let nearTransferOutcome: PracticeEvaluationOutcome?
     public let passiveTransferTicketID: UUID?
+    public let passiveTransferStatusNote: String?
     public let updateMode: PracticeUpdateMode
     public let keyboardLayoutID: String
     public let keyboardDeviceClass: String
@@ -1626,6 +1673,7 @@ public struct PracticeSessionSummaryRecord: Identifiable, Equatable, Codable, Se
         immediateOutcome: PracticeEvaluationOutcome?,
         nearTransferOutcome: PracticeEvaluationOutcome?,
         passiveTransferTicketID: UUID?,
+        passiveTransferStatusNote: String? = nil,
         updateMode: PracticeUpdateMode,
         keyboardLayoutID: String,
         keyboardDeviceClass: String,
@@ -1642,6 +1690,7 @@ public struct PracticeSessionSummaryRecord: Identifiable, Equatable, Codable, Se
         self.immediateOutcome = immediateOutcome
         self.nearTransferOutcome = nearTransferOutcome
         self.passiveTransferTicketID = passiveTransferTicketID
+        self.passiveTransferStatusNote = passiveTransferStatusNote
         self.updateMode = updateMode
         self.keyboardLayoutID = keyboardLayoutID
         self.keyboardDeviceClass = keyboardDeviceClass
@@ -1655,6 +1704,7 @@ public struct PracticeHistorySnapshot: Equatable, Codable, Sendable {
     public var recentSessions: [PracticeSessionSummaryRecord]
     public var recentEvaluations: [ImmediateEvaluationRecord]
     public var pendingTransferTickets: [PassiveTransferTicketRecord]
+    public var pendingTransferProgress: [PassiveTransferProgressSnapshot]
     public var recentTransferResults: [PassiveTransferResultRecord]
     public var recentStateUpdates: [LearnerStateUpdateRecord]
 
@@ -1664,6 +1714,7 @@ public struct PracticeHistorySnapshot: Equatable, Codable, Sendable {
         recentSessions: [PracticeSessionSummaryRecord] = [],
         recentEvaluations: [ImmediateEvaluationRecord] = [],
         pendingTransferTickets: [PassiveTransferTicketRecord] = [],
+        pendingTransferProgress: [PassiveTransferProgressSnapshot] = [],
         recentTransferResults: [PassiveTransferResultRecord] = [],
         recentStateUpdates: [LearnerStateUpdateRecord] = []
     ) {
@@ -1672,6 +1723,7 @@ public struct PracticeHistorySnapshot: Equatable, Codable, Sendable {
         self.recentSessions = recentSessions
         self.recentEvaluations = recentEvaluations
         self.pendingTransferTickets = pendingTransferTickets
+        self.pendingTransferProgress = pendingTransferProgress
         self.recentTransferResults = recentTransferResults
         self.recentStateUpdates = recentStateUpdates
     }

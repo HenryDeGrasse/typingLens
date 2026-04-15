@@ -1,35 +1,60 @@
 import Core
 import Foundation
+import os
 import SQLite3
 
 final class PracticeEvidenceStore {
     private let fileManager: FileManager
     private let encoder: JSONEncoder
     private let decoder: JSONDecoder
-    private let storeURL: URL
+    private let storeURL: URL?
     private var database: OpaquePointer?
+    private(set) var lastPersistenceError: String?
 
     init(fileManager: FileManager = .default) {
         self.fileManager = fileManager
+        (self.encoder, self.decoder) = Self.makeCoders()
 
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = [.sortedKeys]
-        encoder.dateEncodingStrategy = .iso8601
-        self.encoder = encoder
+        guard let applicationSupportDirectory = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask).first else {
+            self.storeURL = nil
+            self.lastPersistenceError = "Application Support directory unavailable. Practice evidence will not be saved."
+            Self.logger.error("Application Support directory unavailable; evidence persistence disabled.")
+            return
+        }
 
-        let decoder = JSONDecoder()
-        decoder.dateDecodingStrategy = .iso8601
-        self.decoder = decoder
-
-        let applicationSupportDirectory = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
-            ?? URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
         let bundleIdentifier = Bundle.main.bundleIdentifier ?? "ai.gauntlet.typinglens"
         let folderURL = applicationSupportDirectory.appendingPathComponent(bundleIdentifier, isDirectory: true)
         self.storeURL = folderURL.appendingPathComponent("practice-evidence.sqlite3", isDirectory: false)
 
-        try? fileManager.createDirectory(at: folderURL, withIntermediateDirectories: true)
-        try? openDatabase()
-        try? migrate()
+        bootstrap(folderURL: folderURL)
+    }
+
+    init(storeURL: URL, fileManager: FileManager = .default) {
+        self.fileManager = fileManager
+        (self.encoder, self.decoder) = Self.makeCoders()
+        self.storeURL = storeURL
+        bootstrap(folderURL: storeURL.deletingLastPathComponent())
+    }
+
+    private static func makeCoders() -> (JSONEncoder, JSONDecoder) {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        encoder.dateEncodingStrategy = .iso8601
+
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+
+        return (encoder, decoder)
+    }
+
+    private func bootstrap(folderURL: URL) {
+        do {
+            try fileManager.createDirectory(at: folderURL, withIntermediateDirectories: true)
+            try openDatabase()
+            try migrate()
+        } catch {
+            recordPersistenceError("Could not initialize evidence store: \(Self.message(for: error))", error: error)
+        }
     }
 
     deinit {
@@ -39,158 +64,177 @@ final class PracticeEvidenceStore {
     }
 
     var persistenceDescription: String {
-        storeURL.path
+        storeURL?.path ?? "(unavailable)"
     }
 
     func ensureModelVersionStamp(_ stamp: ModelVersionStamp) {
-        try? insert(
-            sql: """
-            INSERT OR IGNORE INTO model_version_stamps (
-                id, created_at, payload_json
-            ) VALUES (?, ?, ?);
-            """,
-            bindings: [
-                .text(stamp.id),
-                .text(Self.iso8601(stamp.createdAt)),
-                .text(encoded(stamp))
-            ]
-        )
+        perform(label: "ensureModelVersionStamp") {
+            try insert(
+                sql: """
+                INSERT OR IGNORE INTO model_version_stamps (
+                    id, created_at, payload_json
+                ) VALUES (?, ?, ?);
+                """,
+                bindings: [
+                    .text(stamp.id),
+                    .text(Self.iso8601(stamp.createdAt)),
+                    .text(encoded(stamp))
+                ]
+            )
+        }
     }
 
     func appendRecommendationDecision(_ record: RecommendationDecisionRecord) {
-        try? insert(
-            sql: """
-            INSERT INTO recommendation_decisions (
-                id, created_at, selected_skill_id, selected_weakness, payload_json
-            ) VALUES (?, ?, ?, ?, ?);
-            """,
-            bindings: [
-                .text(record.id.uuidString),
-                .text(Self.iso8601(record.createdAt)),
-                .text(record.selectedSkillID),
-                .text(record.selectedWeakness.rawValue),
-                .text(encoded(record))
-            ]
-        )
-    }
-
-    func appendPracticeSession(_ record: PracticeSessionSummaryRecord) {
-        try? insert(
-            sql: """
-            INSERT INTO practice_sessions (
-                id, started_at, ended_at, selected_skill_id, selected_weakness, payload_json
-            ) VALUES (?, ?, ?, ?, ?, ?);
-            """,
-            bindings: [
-                .text(record.id.uuidString),
-                .text(Self.iso8601(record.startedAt)),
-                .text(Self.iso8601(record.endedAt)),
-                .text(record.selectedSkillID),
-                .text(record.selectedWeakness.rawValue),
-                .text(encoded(record))
-            ]
-        )
-    }
-
-    func appendImmediateEvaluations(_ records: [ImmediateEvaluationRecord]) {
-        for record in records {
-            try? insert(
+        perform(label: "appendRecommendationDecision") {
+            try insert(
                 sql: """
-                INSERT INTO immediate_evaluations (
-                    id, session_id, evaluation_type, inserted_at, payload_json
+                INSERT INTO recommendation_decisions (
+                    id, created_at, selected_skill_id, selected_weakness, payload_json
                 ) VALUES (?, ?, ?, ?, ?);
                 """,
                 bindings: [
                     .text(record.id.uuidString),
-                    .text(record.sessionID.uuidString),
-                    .text(record.evaluationType.rawValue),
-                    .text(Self.iso8601(Date())),
+                    .text(Self.iso8601(record.createdAt)),
+                    .text(record.selectedSkillID),
+                    .text(record.selectedWeakness.rawValue),
                     .text(encoded(record))
                 ]
             )
         }
     }
 
-    func appendPassiveSlices(_ records: [PassiveActiveSliceRecord]) {
-        for record in records {
-            try? insert(
+    func appendPracticeSession(_ record: PracticeSessionSummaryRecord) {
+        perform(label: "appendPracticeSession") {
+            try insert(
                 sql: """
-                INSERT INTO passive_active_slices (
-                    id, started_at, ended_at, keyboard_layout_id, keyboard_device_class, payload_json
+                INSERT INTO practice_sessions (
+                    id, started_at, ended_at, selected_skill_id, selected_weakness, payload_json
                 ) VALUES (?, ?, ?, ?, ?, ?);
                 """,
                 bindings: [
                     .text(record.id.uuidString),
                     .text(Self.iso8601(record.startedAt)),
                     .text(Self.iso8601(record.endedAt)),
-                    .text(record.keyboardLayoutID),
-                    .text(record.keyboardDeviceClass),
+                    .text(record.selectedSkillID),
+                    .text(record.selectedWeakness.rawValue),
                     .text(encoded(record))
                 ]
             )
         }
     }
 
+    func appendImmediateEvaluations(_ records: [ImmediateEvaluationRecord]) {
+        perform(label: "appendImmediateEvaluations") {
+            for record in records {
+                try insert(
+                    sql: """
+                    INSERT INTO immediate_evaluations (
+                        id, session_id, evaluation_type, inserted_at, payload_json
+                    ) VALUES (?, ?, ?, ?, ?);
+                    """,
+                    bindings: [
+                        .text(record.id.uuidString),
+                        .text(record.sessionID.uuidString),
+                        .text(record.evaluationType.rawValue),
+                        .text(Self.iso8601(Date())),
+                        .text(encoded(record))
+                    ]
+                )
+            }
+        }
+    }
+
+    func appendPassiveSlices(_ records: [PassiveActiveSliceRecord]) {
+        perform(label: "appendPassiveSlices") {
+            for record in records {
+                try insert(
+                    sql: """
+                    INSERT INTO passive_active_slices (
+                        id, started_at, ended_at, keyboard_layout_id, keyboard_device_class, payload_json
+                    ) VALUES (?, ?, ?, ?, ?, ?);
+                    """,
+                    bindings: [
+                        .text(record.id.uuidString),
+                        .text(Self.iso8601(record.startedAt)),
+                        .text(Self.iso8601(record.endedAt)),
+                        .text(record.keyboardLayoutID),
+                        .text(record.keyboardDeviceClass),
+                        .text(encoded(record))
+                    ]
+                )
+            }
+        }
+    }
+
     func upsertTransferTicket(_ record: PassiveTransferTicketRecord) {
-        try? insert(
-            sql: """
-            INSERT OR REPLACE INTO passive_transfer_tickets (
-                id, session_id, created_at, status, payload_json
-            ) VALUES (?, ?, ?, ?, ?);
-            """,
-            bindings: [
-                .text(record.id.uuidString),
-                .text(record.sessionID.uuidString),
-                .text(Self.iso8601(record.createdAt)),
-                .text(record.status.rawValue),
-                .text(encoded(record))
-            ]
-        )
+        perform(label: "upsertTransferTicket") {
+            try insert(
+                sql: """
+                INSERT OR REPLACE INTO passive_transfer_tickets (
+                    id, session_id, created_at, status, payload_json
+                ) VALUES (?, ?, ?, ?, ?);
+                """,
+                bindings: [
+                    .text(record.id.uuidString),
+                    .text(record.sessionID.uuidString),
+                    .text(Self.iso8601(record.createdAt)),
+                    .text(record.status.rawValue),
+                    .text(encoded(record))
+                ]
+            )
+        }
     }
 
     func appendTransferResult(_ record: PassiveTransferResultRecord) {
-        try? insert(
-            sql: """
-            INSERT INTO passive_transfer_results (
-                id, ticket_id, resolved_at, payload_json
-            ) VALUES (?, ?, ?, ?);
-            """,
-            bindings: [
-                .text(record.id.uuidString),
-                .text(record.ticketID.uuidString),
-                .text(Self.iso8601(record.resolvedAt)),
-                .text(encoded(record))
-            ]
-        )
+        perform(label: "appendTransferResult") {
+            try insert(
+                sql: """
+                INSERT INTO passive_transfer_results (
+                    id, ticket_id, resolved_at, payload_json
+                ) VALUES (?, ?, ?, ?);
+                """,
+                bindings: [
+                    .text(record.id.uuidString),
+                    .text(record.ticketID.uuidString),
+                    .text(Self.iso8601(record.resolvedAt)),
+                    .text(encoded(record))
+                ]
+            )
+        }
     }
 
     func appendLearnerStateUpdate(_ record: LearnerStateUpdateRecord) {
-        try? insert(
-            sql: """
-            INSERT INTO learner_state_updates (
-                id, created_at, skill_id, source_type, payload_json
-            ) VALUES (?, ?, ?, ?, ?);
-            """,
-            bindings: [
-                .text(record.id.uuidString),
-                .text(Self.iso8601(record.createdAt)),
-                .text(record.skillID),
-                .text(record.sourceType.rawValue),
-                .text(encoded(record))
-            ]
-        )
+        perform(label: "appendLearnerStateUpdate") {
+            try insert(
+                sql: """
+                INSERT INTO learner_state_updates (
+                    id, created_at, skill_id, source_type, payload_json
+                ) VALUES (?, ?, ?, ?, ?);
+                """,
+                bindings: [
+                    .text(record.id.uuidString),
+                    .text(Self.iso8601(record.createdAt)),
+                    .text(record.skillID),
+                    .text(record.sourceType.rawValue),
+                    .text(encoded(record))
+                ]
+            )
+        }
     }
 
     func fetchPracticeHistory(limit: Int = 8) -> PracticeHistorySnapshot {
-        PracticeHistorySnapshot(
+        let pendingTransferTickets: [PassiveTransferTicketRecord] = fetchMany(
+            sql: "SELECT payload_json FROM passive_transfer_tickets WHERE status = ? ORDER BY created_at DESC LIMIT ?;",
+            bindings: [.text(PassiveTransferTicketStatus.pending.rawValue), .integer(Int64(limit))]
+        )
+
+        return PracticeHistorySnapshot(
             modelVersionStamp: fetchSingle(from: "model_version_stamps", orderBy: "created_at DESC"),
             recentDecisions: fetchMany(from: "recommendation_decisions", orderBy: "created_at DESC", limit: limit),
             recentSessions: fetchMany(from: "practice_sessions", orderBy: "ended_at DESC", limit: limit),
             recentEvaluations: fetchMany(from: "immediate_evaluations", orderBy: "inserted_at DESC", limit: limit * 2),
-            pendingTransferTickets: fetchMany(
-                sql: "SELECT payload_json FROM passive_transfer_tickets WHERE status = ? ORDER BY created_at DESC LIMIT ?;",
-                bindings: [.text(PassiveTransferTicketStatus.pending.rawValue), .integer(Int64(limit))]
-            ),
+            pendingTransferTickets: pendingTransferTickets,
+            pendingTransferProgress: pendingTransferTickets.map(transferProgress(for:)),
             recentTransferResults: fetchMany(from: "passive_transfer_results", orderBy: "resolved_at DESC", limit: limit),
             recentStateUpdates: fetchMany(from: "learner_state_updates", orderBy: "created_at DESC", limit: limit)
         )
@@ -200,6 +244,51 @@ final class PracticeEvidenceStore {
         scalarInt(
             sql: "SELECT COUNT(*) FROM practice_sessions WHERE selected_skill_id = ?;",
             bindings: [.text(skillID)]
+        )
+    }
+
+    func transferProgress(for ticket: PassiveTransferTicketRecord) -> PassiveTransferProgressSnapshot {
+        let compatibleSliceCount = scalarInt(
+            sql: """
+            SELECT COUNT(*)
+            FROM passive_active_slices
+            WHERE started_at >= ?
+              AND keyboard_layout_id = ?
+              AND keyboard_device_class = ?;
+            """,
+            bindings: [
+                .text(Self.iso8601(ticket.earliestEligibleAt)),
+                .text(ticket.keyboardLayoutID),
+                .text(ticket.keyboardDeviceClass)
+            ]
+        )
+
+        let incompatibleSliceCount = scalarInt(
+            sql: """
+            SELECT COUNT(*)
+            FROM passive_active_slices
+            WHERE started_at >= ?
+              AND NOT (keyboard_layout_id = ? AND keyboard_device_class = ?);
+            """,
+            bindings: [
+                .text(Self.iso8601(ticket.earliestEligibleAt)),
+                .text(ticket.keyboardLayoutID),
+                .text(ticket.keyboardDeviceClass)
+            ]
+        )
+
+        return PassiveTransferProgressSnapshot(
+            ticketID: ticket.id,
+            skillID: ticket.skillID,
+            weakness: ticket.weakness,
+            status: ticket.status,
+            compatibleSliceCount: compatibleSliceCount,
+            requiredSliceCount: ticket.requiredPostSliceCount,
+            incompatibleSliceCount: incompatibleSliceCount,
+            earliestEligibleAt: ticket.earliestEligibleAt,
+            expiresAt: ticket.expiresAt,
+            keyboardLayoutID: ticket.keyboardLayoutID,
+            keyboardDeviceClass: ticket.keyboardDeviceClass
         )
     }
 
@@ -276,6 +365,27 @@ final class PracticeEvidenceStore {
         )
     }
 
+    private func perform(label: StaticString, _ body: () throws -> Void) {
+        guard database != nil else { return }
+        do {
+            try body()
+        } catch {
+            recordPersistenceError("\(label) failed: \(Self.message(for: error))", error: error)
+        }
+    }
+
+    private func recordPersistenceError(_ description: String, error: Error) {
+        lastPersistenceError = description
+        Self.logger.error("\(description, privacy: .public)")
+    }
+
+    private static func message(for error: Error) -> String {
+        if let storeError = error as? SQLiteStoreError {
+            return storeError.message
+        }
+        return error.localizedDescription
+    }
+
     private func fetchSingle<T: Decodable>(from table: String, orderBy: String) -> T? {
         let values: [T] = fetchMany(from: table, orderBy: orderBy, limit: 1)
         return values.first
@@ -317,11 +427,24 @@ final class PracticeEvidenceStore {
     }
 
     private func openDatabase() throws {
-        var database: OpaquePointer?
-        if sqlite3_open(storeURL.path, &database) != SQLITE_OK {
-            throw SQLiteStoreError.openFailed(message: String(cString: sqlite3_errmsg(database)))
+        guard let storeURL else {
+            throw SQLiteStoreError.openFailed(message: "Store URL unavailable.")
         }
-        self.database = database
+
+        var handle: OpaquePointer?
+        let status = sqlite3_open(storeURL.path, &handle)
+        if status != SQLITE_OK {
+            // sqlite3_open may populate the handle even on failure; capture errmsg before closing.
+            let message: String
+            if let handle {
+                message = String(cString: sqlite3_errmsg(handle))
+                sqlite3_close(handle)
+            } else {
+                message = "sqlite3_open returned status \(status)"
+            }
+            throw SQLiteStoreError.openFailed(message: message)
+        }
+        self.database = handle
     }
 
     private func migrate() throws {
@@ -452,9 +575,19 @@ final class PracticeEvidenceStore {
         return string
     }
 
+    // ISO8601DateFormatter is documented as thread-safe, but ObjC inheritance
+    // prevents Swift from inferring Sendable. Static is read-only after init.
+    nonisolated(unsafe) private static let iso8601Formatter: ISO8601DateFormatter = {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime]
+        return formatter
+    }()
+
     private static func iso8601(_ date: Date) -> String {
-        ISO8601DateFormatter().string(from: date)
+        iso8601Formatter.string(from: date)
     }
+
+    private static let logger = Logger(subsystem: "ai.gauntlet.typinglens", category: "PracticeEvidenceStore")
 }
 
 private enum Binding {
@@ -469,6 +602,16 @@ private enum SQLiteStoreError: Error {
     case execFailed(message: String)
     case prepareFailed(message: String)
     case stepFailed(message: String)
+
+    var message: String {
+        switch self {
+        case let .openFailed(message),
+             let .execFailed(message),
+             let .prepareFailed(message),
+             let .stepFailed(message):
+            return message
+        }
+    }
 }
 
 private let SQLITE_TRANSIENT = unsafeBitCast(-1, to: sqlite3_destructor_type.self)

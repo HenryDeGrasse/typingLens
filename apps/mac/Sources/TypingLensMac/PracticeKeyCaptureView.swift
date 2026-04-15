@@ -35,9 +35,25 @@ final class PracticeCaptureNSView: NSView {
         true
     }
 
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        configureAccessibility()
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) is not supported")
+    }
+
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
         refocusIfNeeded()
+    }
+
+    private func configureAccessibility() {
+        setAccessibilityRole(.textField)
+        setAccessibilityLabel("Practice focus pad")
+        setAccessibilityHelp("Type the prompt above. Letters and spaces are forwarded to the active drill block. Use Delete to backspace.")
     }
 
     override func mouseDown(with event: NSEvent) {

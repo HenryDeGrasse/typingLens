@@ -19,6 +19,10 @@ let package = Package(
         .target(
             name: "Capture",
             dependencies: ["Core"]
+        ),
+        .testTarget(
+            name: "CaptureTests",
+            dependencies: ["Capture", "Core"]
         )
     ]
 )

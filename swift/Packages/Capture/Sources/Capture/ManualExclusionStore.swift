@@ -46,4 +46,9 @@ final class ManualExclusionStore {
         let data = try encoder.encode(excludedApplications)
         try data.write(to: storeURL, options: [.atomic])
     }
+
+    func clear() throws {
+        guard fileManager.fileExists(atPath: storeURL.path) else { return }
+        try fileManager.removeItem(at: storeURL)
+    }
 }
