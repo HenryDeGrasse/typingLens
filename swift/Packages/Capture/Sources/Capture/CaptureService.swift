@@ -18,9 +18,12 @@ public final class CaptureService: ObservableObject {
     private let eventTap = KeyboardEventTap()
     private let profileEngine = TypingProfileEngine()
     private let practiceRuntimeEngine = PracticeRuntimeEngine()
+    private let passiveSliceRecorder = PassiveSliceRecorder()
     private let advancedDiagnosticsAggregator = TypingMetricsAggregator()
     private let manualExclusionStore = ManualExclusionStore()
     private let legacyAggregateStore = AggregateMetricsStore()
+    private let evidenceStore = PracticeEvidenceStore()
+    private let modelVersionStamp = PracticeEvaluationEngine.currentModelVersionStamp
 
     private var manualExcludedApplications: [ExcludedApplication]
     private var activationObserver: NSObjectProtocol?
@@ -34,9 +37,12 @@ public final class CaptureService: ObservableObject {
     private var lastExcludedAppName: String?
     private var secureInputState: SecureInputState = .unavailable
     private var unsavedProfileMutations = 0
+    private var activeRecommendationDecision: RecommendationDecisionRecord?
+    private var currentPracticeDeviceClass = "unknown-device"
 
     public init() {
         try? legacyAggregateStore.clear()
+        evidenceStore.ensureModelVersionStamp(modelVersionStamp)
 
         let manualExcludedApplications = manualExclusionStore.load()
             .sorted(using: KeyPathComparator(\.displayName, comparator: .localizedStandard))
@@ -46,14 +52,19 @@ public final class CaptureService: ObservableObject {
             profileSnapshot: profileEngine.currentSnapshot(),
             learningModel: LearningModelEngine.build(from: profileEngine.currentSnapshot()),
             practiceRuntime: practiceRuntimeEngine.snapshot(),
+            practiceHistory: evidenceStore.fetchPracticeHistory(limit: 8),
             advancedDiagnostics: advancedDiagnosticsAggregator.metrics,
             trustState: TrustState(
                 secureInputState: .unavailable,
                 profileStorePath: profileEngine.persistenceDescription,
                 manualExclusionsStorePath: manualExclusionStore.persistenceDescription,
+                evidenceStorePath: evidenceStore.persistenceDescription,
+                keyboardLayoutID: KeyboardContext.currentLayoutID(),
+                keyboardLayoutName: KeyboardContext.currentLayoutName(),
+                keyboardDeviceClass: currentPracticeDeviceClass,
                 storesRawText: false,
                 storesLiteralNGrams: false,
-                note: "Typing Lens stores content-free local profile summaries. Raw preview stays debug-only in memory and any legacy M2 literal n-gram store is cleared on launch."
+                note: "Typing Lens stores local profile summaries in JSON and aggregate-only coaching evidence in SQLite. It does not store raw typed text, raw practice responses, or raw event streams."
             ),
             exclusionStatus: ExclusionStatus(
                 builtInExcludedApplications: ApplicationExclusionPolicy.builtInExcludedApplications,
@@ -182,6 +193,7 @@ public final class CaptureService: ObservableObject {
 
     public func resetCaptureData() {
         clearPracticeRuntime()
+        passiveSliceRecorder.reset()
         debugBuffer.reset()
         state.debugPreviewText = ""
         state.recentEvents = []
@@ -204,14 +216,37 @@ public final class CaptureService: ObservableObject {
     }
 
     public func startRecommendedPracticeSession() {
-        guard let sessionPlan = state.learningModel.recommendedSession else {
+        guard let sessionPlan = state.learningModel.recommendedSession,
+              let primaryWeakness = state.learningModel.primaryWeakness else {
             return
         }
 
+        startPracticeSession(plan: sessionPlan, weakness: primaryWeakness)
+    }
+
+    public func startManualPracticeSession(family: PracticeDrillFamily) {
+        let manualRecommendation = LearningModelEngine.manualPracticeRecommendation(for: family)
+        startPracticeSession(plan: manualRecommendation.1, weakness: manualRecommendation.0)
+    }
+
+    public func observePracticeDeviceClass(_ deviceClass: String) {
+        guard !deviceClass.isEmpty, deviceClass != currentPracticeDeviceClass else { return }
+        currentPracticeDeviceClass = deviceClass
+        refreshDerivedStateAndHealth()
+    }
+
+    private func startPracticeSession(plan: PracticeSessionPlan, weakness: WeaknessAssessment) {
+        guard state.permissionState == .granted else { return }
+
         lastRuntimeNote = nil
+        currentPracticeDeviceClass = "unknown-device"
+        flushPassiveSliceIfNeeded(endedAt: Date())
+        let decision = recommendationDecision(for: weakness)
+        activeRecommendationDecision = decision
+        evidenceStore.appendRecommendationDecision(decision)
         practiceRuntimeEngine.start(
-            plan: sessionPlan,
-            weakness: state.learningModel.primaryWeakness
+            plan: plan,
+            weakness: weakness
         )
         startPracticeTimer()
         refreshDerivedStateAndHealth()
@@ -229,14 +264,18 @@ public final class CaptureService: ObservableObject {
     }
 
     public func cancelPracticeSession() {
-        practiceRuntimeEngine.cancel()
+        if let artifact = practiceRuntimeEngine.cancel() {
+            persistCompletedPracticeArtifact(artifact)
+        }
         stopPracticeTimer()
         lastRuntimeNote = nil
         refreshDerivedStateAndHealth()
     }
 
     public func advancePracticeBlock() {
-        practiceRuntimeEngine.advanceBlock()
+        if let artifact = practiceRuntimeEngine.advanceBlock() {
+            persistCompletedPracticeArtifact(artifact)
+        }
         syncPracticeTimerToRuntimeState()
         refreshDerivedStateAndHealth()
     }
@@ -368,6 +407,7 @@ public final class CaptureService: ObservableObject {
         ) { [weak self] _ in
             Task { @MainActor [weak self] in
                 self?.persistProfile(force: true)
+                self?.flushPassiveSliceIfNeeded(endedAt: Date())
                 self?.pausePracticeSession(reason: "Practice paused because Typing Lens moved to the background.")
             }
         }
@@ -379,6 +419,7 @@ public final class CaptureService: ObservableObject {
         ) { [weak self] _ in
             Task { @MainActor [weak self] in
                 self?.persistProfile(force: true)
+                self?.flushPassiveSliceIfNeeded(endedAt: Date())
                 self?.stopPracticeTimer()
             }
         }
@@ -460,6 +501,16 @@ public final class CaptureService: ObservableObject {
             state.debugPreviewText = debugBuffer.previewText
             state.recentEvents = debugBuffer.events
             lastRuntimeNote = nil
+
+            if let slice = passiveSliceRecorder.record(
+                classifiedEvent,
+                keyboardLayoutID: currentKeyboardLayoutID(),
+                keyboardDeviceClass: KeyboardContext.deviceClass(for: observedEvent),
+                modelVersionStampID: modelVersionStamp.id
+            ) {
+                evidenceStore.appendPassiveSlices([slice])
+                resolvePendingTransferTickets()
+            }
         }
 
         markProfileDirty()
@@ -489,8 +540,9 @@ public final class CaptureService: ObservableObject {
     private func refreshDerivedStateAndHealth() {
         state.captureActivityState = currentCaptureActivityState()
         state.profileSnapshot = profileEngine.currentSnapshot()
-        state.learningModel = LearningModelEngine.build(from: state.profileSnapshot)
+        state.learningModel = overlayAppliedStateUpdates(on: LearningModelEngine.build(from: state.profileSnapshot))
         state.practiceRuntime = practiceRuntimeEngine.snapshot()
+        state.practiceHistory = evidenceStore.fetchPracticeHistory(limit: 8)
         state.advancedDiagnostics = advancedDiagnosticsAggregator.metrics
         state.tapHealth = TapHealth(
             isInstalled: eventTap.isInstalled,
@@ -502,9 +554,13 @@ public final class CaptureService: ObservableObject {
             secureInputState: secureInputState,
             profileStorePath: profileEngine.persistenceDescription,
             manualExclusionsStorePath: manualExclusionStore.persistenceDescription,
+            evidenceStorePath: evidenceStore.persistenceDescription,
+            keyboardLayoutID: currentKeyboardLayoutID(),
+            keyboardLayoutName: currentKeyboardLayoutName(),
+            keyboardDeviceClass: currentPracticeDeviceClass,
             storesRawText: false,
             storesLiteralNGrams: false,
-            note: "Typing Lens stores content-free daily profile summaries locally. Literal n-grams and raw preview text are not persisted, and any legacy M2 literal n-gram store is cleared on launch."
+            note: "Typing Lens stores content-free daily profile summaries locally, plus aggregate-only coaching evidence in SQLite. Prompt text, typed practice responses, raw preview text, and raw event streams are not persisted."
         )
         refreshExclusionState()
     }
@@ -580,6 +636,8 @@ public final class CaptureService: ObservableObject {
         practiceRuntimeEngine.reset()
         stopPracticeTimer()
         lastRuntimeNote = nil
+        activeRecommendationDecision = nil
+        currentPracticeDeviceClass = "unknown-device"
     }
 
     private func startPracticeTimer() {
@@ -592,7 +650,9 @@ public final class CaptureService: ObservableObject {
         practiceTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
             Task { @MainActor [weak self] in
                 guard let self else { return }
-                self.practiceRuntimeEngine.tick()
+                if let artifact = self.practiceRuntimeEngine.tick() {
+                    self.persistCompletedPracticeArtifact(artifact)
+                }
                 self.syncPracticeTimerToRuntimeState()
                 self.refreshDerivedStateAndHealth()
             }
@@ -619,6 +679,215 @@ public final class CaptureService: ObservableObject {
         case .idle, .completed, .canceled:
             stopPracticeTimer()
             lastRuntimeNote = nil
+        }
+    }
+
+    private func recommendationDecision(for weakness: WeaknessAssessment) -> RecommendationDecisionRecord {
+        RecommendationDecisionRecord(
+            createdAt: Date(),
+            selectedSkillID: weakness.targetSkillIDs.first ?? "unknownSkill",
+            selectedWeakness: weakness.category,
+            candidateSkillIDs: state.learningModel.weaknesses.flatMap(\.targetSkillIDs),
+            candidateReasonCodes: weakness.supportingSignals,
+            selectedBecauseReasonCode: weakness.rationale,
+            passiveSnapshotReference: snapshotReference(),
+            hysteresisApplied: false,
+            suppressedBecausePendingTransfer: !state.practiceHistory.pendingTransferTickets.isEmpty,
+            modelVersionStampID: modelVersionStamp.id
+        )
+    }
+
+    private func snapshotReference() -> String {
+        "todayKeys:\(state.profileSnapshot.today.includedKeyDownCount)|baselineDays:\(state.profileSnapshot.baselineDayCount)|last:\(state.profileSnapshot.today.lastIncludedEventAt?.ISO8601Format() ?? "none")"
+    }
+
+    private func currentKeyboardLayoutID() -> String {
+        KeyboardContext.currentLayoutID()
+    }
+
+    private func currentKeyboardLayoutName() -> String {
+        KeyboardContext.currentLayoutName()
+    }
+
+    private func flushPassiveSliceIfNeeded(endedAt: Date) {
+        if let slice = passiveSliceRecorder.flushRemaining(modelVersionStampID: modelVersionStamp.id, endedAt: endedAt) {
+            evidenceStore.appendPassiveSlices([slice])
+            resolvePendingTransferTickets()
+        }
+    }
+
+    private func persistCompletedPracticeArtifact(_ artifact: PracticeRuntimeEngine.CompletedSessionArtifact) {
+        guard let decision = activeRecommendationDecision else {
+            activeRecommendationDecision = nil
+            return
+        }
+
+        let sessionID = UUID()
+
+        let evaluations = PracticeEvaluationEngine.evaluateImmediateSession(
+            sessionID: sessionID,
+            selectedSkillID: artifact.selectedSkillID,
+            weakness: artifact.weakness,
+            blocks: artifact.blockSummaries
+        )
+
+        let keyboardLayoutID = currentKeyboardLayoutID()
+        let keyboardDeviceClass = currentPracticeDeviceClass
+        let baselineSlices = evidenceStore.recentPassiveSlices(
+            endingBefore: artifact.startedAt,
+            keyboardLayoutID: keyboardLayoutID,
+            keyboardDeviceClass: keyboardDeviceClass,
+            limit: 3
+        )
+        let transferTicket = PracticeEvaluationEngine.makeTransferTicket(
+            sessionID: sessionID,
+            selectedSkillID: artifact.selectedSkillID,
+            weakness: artifact.weakness,
+            sessionEndedAt: artifact.endedAt,
+            keyboardLayoutID: keyboardLayoutID,
+            keyboardDeviceClass: keyboardDeviceClass,
+            baselineSlices: baselineSlices
+        )
+
+        let sessionRecord = PracticeSessionSummaryRecord(
+            id: sessionID,
+            startedAt: artifact.startedAt,
+            endedAt: artifact.endedAt,
+            selectedSkillID: artifact.selectedSkillID,
+            selectedWeakness: artifact.weakness.category,
+            recommendationDecisionID: decision.id,
+            modelVersionStampID: modelVersionStamp.id,
+            targetConfirmationStatus: evaluations.targetConfirmationStatus,
+            immediateOutcome: evaluations.immediateOutcome,
+            nearTransferOutcome: evaluations.nearTransferOutcome,
+            passiveTransferTicketID: transferTicket?.id,
+            updateMode: .shadow,
+            keyboardLayoutID: keyboardLayoutID,
+            keyboardDeviceClass: keyboardDeviceClass,
+            blockSummaries: artifact.blockSummaries
+        )
+
+        evidenceStore.appendPracticeSession(sessionRecord)
+        evidenceStore.appendImmediateEvaluations(evaluations.evaluations)
+        evaluations.updates.forEach { evidenceStore.appendLearnerStateUpdate($0) }
+        if let transferTicket {
+            evidenceStore.upsertTransferTicket(transferTicket)
+        }
+
+        activeRecommendationDecision = nil
+        currentPracticeDeviceClass = "unknown-device"
+        resolvePendingTransferTickets()
+    }
+
+    private func resolvePendingTransferTickets() {
+        let history = evidenceStore.fetchPracticeHistory(limit: 32)
+        let now = Date()
+
+        for ticket in history.pendingTransferTickets {
+            if now > ticket.expiresAt {
+                evidenceStore.upsertTransferTicket(ticket.updating(status: .expired))
+                continue
+            }
+
+            guard now >= ticket.earliestEligibleAt else {
+                continue
+            }
+
+            let postSlices = evidenceStore.recentPassiveSlices(
+                startingAfter: ticket.earliestEligibleAt,
+                keyboardLayoutID: ticket.keyboardLayoutID,
+                keyboardDeviceClass: ticket.keyboardDeviceClass,
+                limit: max(ticket.requiredPostSliceCount, 3)
+            )
+
+            guard let evaluation = PracticeEvaluationEngine.evaluatePassiveTransfer(
+                ticket: ticket,
+                postSlices: postSlices
+            ) else {
+                continue
+            }
+
+            evidenceStore.appendTransferResult(evaluation.result)
+            let shouldApply = shouldApplyPassiveUpdate(for: ticket.skillID, outcome: evaluation.result.outcome)
+            let updateRecord = evaluation.update.applying(
+                toRecommendations: shouldApply,
+                extraReasonCodes: shouldApply ? ["appliedGatePassed"] : ["appliedGateDeferred"]
+            )
+            evidenceStore.appendLearnerStateUpdate(updateRecord)
+            evidenceStore.upsertTransferTicket(ticket.updating(status: .resolved))
+        }
+    }
+
+    private func shouldApplyPassiveUpdate(
+        for skillID: String,
+        outcome: PracticeEvaluationOutcome
+    ) -> Bool {
+        let sessionCount = evidenceStore.recentPracticeSessionCount(skillID: skillID)
+        let positiveOutcome = outcome == .improvedWeak || outcome == .improvedStrong
+        return positiveOutcome && sessionCount >= 3
+    }
+
+    private func overlayAppliedStateUpdates(on snapshot: LearningModelSnapshot) -> LearningModelSnapshot {
+        let overlay = evidenceStore.appliedStateOverlay()
+        guard !overlay.isEmpty else { return snapshot }
+
+        let updatedStates = snapshot.studentStates.map { state -> StudentSkillState in
+            guard let delta = overlay[state.id] else { return state }
+            return StudentSkillState(
+                id: state.id,
+                title: state.title,
+                current: state.current.adding(delta).clamped(),
+                target: state.target,
+                confidence: state.confidence,
+                evidenceCount: state.evidenceCount,
+                note: state.note + " Applied local evidence overlay adjusts this skill from prior resolved transfer results."
+            )
+        }
+
+        let updatedWeaknesses = snapshot.weaknesses.map { weakness -> WeaknessAssessment in
+            guard let skillID = weakness.targetSkillIDs.first,
+                  let delta = overlay[skillID] else {
+                return weakness
+            }
+
+            let shouldStabilize = delta.automaticity >= 0.04 || (delta.control + delta.consistency) >= 0.12
+            guard shouldStabilize else { return weakness }
+
+            return WeaknessAssessment(
+                id: weakness.id,
+                category: weakness.category,
+                title: weakness.title,
+                summary: weakness.summary,
+                severity: downgradedSeverity(weakness.severity),
+                confidence: weakness.confidence,
+                lifecycleState: .stabilizing,
+                supportingSignals: weakness.supportingSignals + ["appliedEvidenceOverlay"],
+                targetSkillIDs: weakness.targetSkillIDs,
+                recommendedDrill: weakness.recommendedDrill,
+                rationale: weakness.rationale
+            )
+        }
+
+        let primaryWeakness = updatedWeaknesses.first
+
+        return LearningModelSnapshot(
+            skillNodes: snapshot.skillNodes,
+            skillEdges: snapshot.skillEdges,
+            studentStates: updatedStates,
+            weaknesses: updatedWeaknesses,
+            primaryWeakness: primaryWeakness,
+            recommendedSession: primaryWeakness.map(LearningModelEngine.recommendedSession(for:))
+        )
+    }
+
+    private func downgradedSeverity(_ severity: WeaknessSeverity) -> WeaknessSeverity {
+        switch severity {
+        case .strong:
+            return .moderate
+        case .moderate:
+            return .mild
+        case .mild:
+            return .mild
         }
     }
 

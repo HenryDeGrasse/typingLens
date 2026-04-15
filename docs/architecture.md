@@ -80,7 +80,8 @@ Maps current student state into:
 - confirmatory probes
 - drill families
 - difficulty levels
-- transfer checks
+- near-transfer checks
+- later passive transfer tickets
 
 The first version should be deterministic and explainable.
 
@@ -91,7 +92,9 @@ Owns:
 - drill blocks
 - practice session sequencing
 - immediate post-drill checks
-- transfer logging
+- near-transfer checks
+- aggregate-only evidence logging
+- passive transfer ticket creation
 
 This layer should consume the learner model, not invent its own concept of mastery.
 

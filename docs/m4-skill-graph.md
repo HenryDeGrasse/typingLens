@@ -198,9 +198,10 @@ The reason is simple: heavy correction burden contaminates speed and timing inte
 Every recommended session should follow the same simple shape:
 
 1. confirmatory probe
-2. 2–4 short drill blocks based on severity
-3. post-drill check
-4. later transfer check in passive typing
+2. two short drill blocks
+3. post-check
+4. near-transfer check
+5. later passive transfer check outside the session
 
 This creates the clean attribution loop:
 

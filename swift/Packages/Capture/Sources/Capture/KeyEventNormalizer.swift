@@ -5,6 +5,8 @@ import Foundation
 struct ClassifiedKeyEvent {
     let timestamp: Date
     let keyCode: Int64
+    let keyboardType: Int64
+    let deviceID: Int64
     let eventPhase: ObservedKeyEventPhase
     let kind: String
     let debugRenderedValue: String
@@ -52,6 +54,8 @@ enum KeyEventNormalizer {
         return ClassifiedKeyEvent(
             timestamp: observedEvent.timestamp,
             keyCode: observedEvent.keyCode,
+            keyboardType: observedEvent.keyboardType,
+            deviceID: observedEvent.deviceID,
             eventPhase: observedEvent.phase,
             kind: observedEvent.kind,
             debugRenderedValue: observedEvent.renderedValue,

@@ -5,11 +5,13 @@ struct PracticeKeyCaptureView: NSViewRepresentable {
     let isActive: Bool
     let onCharacter: (String) -> Void
     let onBackspace: () -> Void
+    let onDeviceClassObserved: (String) -> Void
 
     func makeNSView(context: Context) -> PracticeCaptureNSView {
         let view = PracticeCaptureNSView()
         view.onCharacter = onCharacter
         view.onBackspace = onBackspace
+        view.onDeviceClassObserved = onDeviceClassObserved
         view.isCaptureActive = isActive
         return view
     }
@@ -17,6 +19,7 @@ struct PracticeKeyCaptureView: NSViewRepresentable {
     func updateNSView(_ nsView: PracticeCaptureNSView, context: Context) {
         nsView.onCharacter = onCharacter
         nsView.onBackspace = onBackspace
+        nsView.onDeviceClassObserved = onDeviceClassObserved
         nsView.isCaptureActive = isActive
         nsView.refocusIfNeeded()
     }
@@ -25,6 +28,7 @@ struct PracticeKeyCaptureView: NSViewRepresentable {
 final class PracticeCaptureNSView: NSView {
     var onCharacter: ((String) -> Void)?
     var onBackspace: (() -> Void)?
+    var onDeviceClassObserved: ((String) -> Void)?
     var isCaptureActive = false
 
     override var acceptsFirstResponder: Bool {
@@ -50,6 +54,8 @@ final class PracticeCaptureNSView: NSView {
         guard blockedModifiers.isEmpty else {
             return
         }
+
+        onDeviceClassObserved?(deviceClass(for: event))
 
         switch event.keyCode {
         case 51:
@@ -84,5 +90,13 @@ final class PracticeCaptureNSView: NSView {
                 window.makeFirstResponder(self)
             }
         }
+    }
+
+    private func deviceClass(for event: NSEvent) -> String {
+        let deviceID = event.deviceID
+        if deviceID > 0 {
+            return "device-\(deviceID)"
+        }
+        return "unknown-device"
     }
 }

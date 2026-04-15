@@ -30,9 +30,16 @@ M4 adds a deterministic interpretation layer above that profile:
   - confirmatory probe
   - drill blocks
   - post-check
-  - transfer check
+  - near-transfer check
 
-The current M4 slice is still MVP-sized: it now includes a first in-app drill runtime, but it does not yet persist structured drill history or close the full transfer loop automatically.
+The current M4/M4b slice is still MVP-sized, but it now includes:
+
+- a first in-app drill runtime
+- a local SQLite evidence ledger
+- aggregate-only session/block persistence
+- immediate evaluation records
+- passive slice / transfer-ticket scaffolding
+- an in-app audit trail for manual testing
 
 ## What this prototype does
 
@@ -68,6 +75,16 @@ The current M4 slice is still MVP-sized: it now includes a first in-app drill ru
   - per-block timers
   - prompt progression
   - immediate block summaries
+  - manual tester overrides for starting specific drill families
+- persists an aggregate-only evidence ledger in SQLite with:
+  - recommendation decisions
+  - session summaries
+  - block summaries
+  - immediate evaluation results
+  - passive activity slices
+  - passive transfer tickets/results
+  - shadow/applied learner-state update records
+- shows an audit/history view for recent sessions and evaluations
 - keeps a macOS menu bar extra for quick status/actions
 - keeps advanced literal n-gram diagnostics only as a transient, demoted section
 - keeps a raw preview only for DEBUG-only local validation
@@ -79,7 +96,7 @@ The current M4 slice is still MVP-sized: it now includes a first in-app drill ru
 - no persistent literal bigram/trigram storage in the learner model
 - no network activity
 - no sync/backend/account system
-- no persisted drill history / transfer result store yet
+- no opaque AI coaching loop
 - no AI coaching layer yet
 - no web UI yet
 
@@ -174,7 +191,7 @@ If you only want to build:
    - pause/resume the session
    - skip prompts or advance blocks manually
    - finish with a visible per-block summary
-18. Confirm that practice prompt text is not written to the local JSON stores.
+18. Confirm that practice prompt text is not written to the local stores.
 19. Open the Typing Lens icon in the macOS menu bar and confirm you can:
    - see capture status at a glance
    - see the current primary weakness if one is available
@@ -184,16 +201,18 @@ If you only want to build:
 20. Optional persistence check:
    - inspect `~/Library/Application Support/ai.gauntlet.typinglens/typing-profile-store.json`
    - inspect `~/Library/Application Support/ai.gauntlet.typinglens/manual-excluded-apps.json`
+   - inspect `~/Library/Application Support/ai.gauntlet.typinglens/practice-evidence.sqlite3`
    - confirm the stores contain summary/profile data and app identifiers only
-   - confirm they do **not** contain raw preview text or persisted literal n-gram strings
+   - confirm they do **not** contain raw preview text, raw practice responses, or persisted literal n-gram strings
 
 ## Privacy and storage notes
 
 - The product-facing UI is profile-first and learner-model-first.
-- The persisted store is a local summary store of counts and histograms.
+- The persisted stores are local summary/evidence stores of counts, histograms, and evaluation records.
 - The app does **not** write raw typed text to disk.
 - The app does **not** write raw event streams to disk.
 - The app does **not** persist the debug raw preview.
+- The app does **not** persist in-app practice prompt text or typed responses.
 - The app does **not** persist literal bigram/trigram tables in the M4 learner model.
 - The app does **not** send captured data over the network.
 - Manual exclusions are stored separately as app identifiers only.
@@ -205,12 +224,14 @@ Typing Lens currently stores:
 
 - local profile summaries (`typing-profile-store.json`)
 - local manual app exclusions (`manual-excluded-apps.json`)
+- local practice evidence ledger (`practice-evidence.sqlite3`)
 
 Typing Lens currently does **not** store:
 
 - raw typed text
 - raw debug preview text
 - raw event streams
+- raw practice responses
 - persisted literal n-gram diagnostics
 
 ## Development caveat

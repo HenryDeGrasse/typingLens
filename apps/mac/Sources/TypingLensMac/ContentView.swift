@@ -29,6 +29,7 @@ struct ContentView: View {
                 weaknessesCard
                 practicePlanCard
                 practiceRuntimeCard
+                practiceHistoryCard
                 skillStateCard
                 rhythmAndFlowRow
                 accuracyAndReachRow
@@ -243,9 +244,27 @@ struct ContentView: View {
                     Text(session.followUp)
                         .font(.callout)
                         .foregroundStyle(.secondary)
+
+                    Menu("Manual tester override") {
+                        ForEach(manualPracticeFamilies, id: \.self) { family in
+                            Button(displayName(for: family)) {
+                                captureService.startManualPracticeSession(family: family)
+                            }
+                        }
+                    }
                 } else {
-                    Text("No primary practice session is recommended yet. The app needs a little more evidence before it should prescribe a focused drill.")
-                        .foregroundStyle(.secondary)
+                    VStack(alignment: .leading, spacing: 10) {
+                        Text("No primary practice session is recommended yet. The app needs a little more evidence before it should prescribe a focused drill.")
+                            .foregroundStyle(.secondary)
+
+                        Menu("Manual tester override") {
+                            ForEach(manualPracticeFamilies, id: \.self) { family in
+                                Button(displayName(for: family)) {
+                                    captureService.startManualPracticeSession(family: family)
+                                }
+                            }
+                        }
+                    }
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -374,6 +393,9 @@ struct ContentView: View {
                                 },
                                 onBackspace: {
                                     captureService.handlePracticeBackspace()
+                                },
+                                onDeviceClassObserved: { deviceClass in
+                                    captureService.observePracticeDeviceClass(deviceClass)
                                 }
                             )
                         }
@@ -455,11 +477,215 @@ struct ContentView: View {
                             .fixedSize(horizontal: false, vertical: true)
                     }
 
-                    if let laterTransferNote = state.practiceRuntime.laterTransferNote {
-                        Text("Later transfer check: \(laterTransferNote)")
+                    if let passiveTransferNote = state.practiceRuntime.passiveTransferNote {
+                        Text("Later passive transfer check: \(passiveTransferNote)")
                             .font(.callout)
                             .foregroundStyle(.secondary)
                             .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
+    private var practiceHistoryCard: some View {
+        GroupBox("Evidence Ledger + Audit Trail") {
+            VStack(alignment: .leading, spacing: 12) {
+                Text("This tester view shows the local SQLite evidence ledger. It stores aggregate-only recommendations, sessions, evaluations, passive transfer tickets, and learner-state update records. It does not store prompt text, typed responses, or raw keystroke streams.")
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                if let modelVersion = state.practiceHistory.modelVersionStamp {
+                    Text("Model stamp: practice \(modelVersion.practiceScorerVersion) · immediate eval \(modelVersion.immediateEvaluatorVersion) · passive transfer \(modelVersion.passiveTransferEvaluatorVersion) · update policy \(modelVersion.learnerUpdatePolicyVersion)")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
+                if !state.practiceHistory.recentDecisions.isEmpty {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("Recent recommendation decisions")
+                            .font(.headline)
+                        ForEach(state.practiceHistory.recentDecisions.prefix(4)) { decision in
+                            VStack(alignment: .leading, spacing: 4) {
+                                HStack {
+                                    Text("\(displaySkillTitle(for: decision.selectedSkillID)) · \(displayName(for: decision.selectedWeakness))")
+                                        .font(.subheadline.weight(.medium))
+                                    Spacer()
+                                    Text(dateTimeLabel(decision.createdAt))
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                }
+                                Text("Why chosen: \(decision.selectedBecauseReasonCode)")
+                                    .font(.caption)
+                                if !decision.candidateReasonCodes.isEmpty {
+                                    Text(formattedReasonCodes(decision.candidateReasonCodes))
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                }
+                            }
+                            Divider()
+                        }
+                    }
+                }
+
+                if !state.practiceHistory.pendingTransferTickets.isEmpty {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("Pending passive transfer tickets")
+                            .font(.headline)
+                        ForEach(state.practiceHistory.pendingTransferTickets) { ticket in
+                            VStack(alignment: .leading, spacing: 4) {
+                                HStack {
+                                    Text("\(displaySkillTitle(for: ticket.skillID)) · \(displayName(for: ticket.weakness))")
+                                        .font(.subheadline.weight(.medium))
+                                    Spacer()
+                                    Text(displayName(for: ticket.status))
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                }
+                                Text(transferTicketStatusLabel(ticket))
+                                    .font(.caption)
+                                Text("Layout \(ticket.keyboardLayoutID) · Device \(ticket.keyboardDeviceClass)")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                            Divider()
+                        }
+                    }
+                }
+
+                if state.practiceHistory.recentSessions.isEmpty {
+                    Text("No completed sessions yet.")
+                        .foregroundStyle(.secondary)
+                } else {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("Recent sessions")
+                            .font(.headline)
+                        ForEach(state.practiceHistory.recentSessions) { session in
+                            VStack(alignment: .leading, spacing: 4) {
+                                HStack {
+                                    Text("\(displaySkillTitle(for: session.selectedSkillID)) · \(displayName(for: session.selectedWeakness))")
+                                        .font(.headline)
+                                    Spacer()
+                                    Text(displayName(for: session.targetConfirmationStatus))
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                }
+                                Text("Immediate \(displayName(for: session.immediateOutcome)) · Near transfer \(displayName(for: session.nearTransferOutcome)) · Update mode \(displayName(for: session.updateMode))")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                Text("Started \(dateTimeLabel(session.startedAt)) · Ended \(dateTimeLabel(session.endedAt)) · Blocks \(session.blockSummaries.count) · Layout \(session.keyboardLayoutID) · Device \(session.keyboardDeviceClass)")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+
+                                DisclosureGroup("Block details") {
+                                    VStack(alignment: .leading, spacing: 8) {
+                                        ForEach(session.blockSummaries) { block in
+                                            VStack(alignment: .leading, spacing: 4) {
+                                                HStack {
+                                                    Text("\(displayName(for: block.role)) · \(block.title)")
+                                                        .font(.subheadline.weight(.medium))
+                                                    Spacer()
+                                                    Text(percentString(block.accuracy))
+                                                        .font(.caption)
+                                                        .foregroundStyle(.secondary)
+                                                }
+                                                Text("Prompts \(block.promptsCompleted) · Entered \(block.charsEntered) · Active \(timerString(block.activeTypingMilliseconds / 1000)) · Sufficiency \(displayName(for: block.sufficiencyStatus))")
+                                                    .font(.caption)
+                                                    .foregroundStyle(.secondary)
+                                                Text(block.assessmentBlueprintDescriptor)
+                                                    .font(.caption)
+                                                    .foregroundStyle(.secondary)
+                                            }
+                                        }
+                                    }
+                                    .padding(.top, 8)
+                                }
+                            }
+                            Divider()
+                        }
+                    }
+                }
+
+                if !state.practiceHistory.recentEvaluations.isEmpty {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("Recent evaluations")
+                            .font(.headline)
+                        ForEach(state.practiceHistory.recentEvaluations.prefix(6)) { evaluation in
+                            VStack(alignment: .leading, spacing: 3) {
+                                HStack {
+                                    Text("\(displayName(for: evaluation.evaluationType)) · \(displayName(for: evaluation.outcome))")
+                                        .font(.subheadline.weight(.medium))
+                                    Spacer()
+                                    Text(evaluation.primaryMetricKey)
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                }
+                                if !evaluation.guardOutcomeCodes.isEmpty {
+                                    Text("Guards: \(formattedReasonCodes(evaluation.guardOutcomeCodes))")
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                }
+                                if let specificity = evaluation.specificityControlOutcome {
+                                    Text("Specificity: \(formattedReasonCodes([specificity]))")
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                }
+                                Text(formattedReasonCodes(evaluation.reasonCodes))
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                            Divider()
+                        }
+                    }
+                }
+
+                if !state.practiceHistory.recentTransferResults.isEmpty {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("Recent passive transfer results")
+                            .font(.headline)
+                        ForEach(state.practiceHistory.recentTransferResults.prefix(4)) { result in
+                            VStack(alignment: .leading, spacing: 4) {
+                                HStack {
+                                    Text(displayName(for: result.outcome))
+                                        .font(.subheadline.weight(.medium))
+                                    Spacer()
+                                    Text(dateTimeLabel(result.resolvedAt))
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                }
+                                Text(formattedReasonCodes(result.reasonCodes))
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                            Divider()
+                        }
+                    }
+                }
+
+                if !state.practiceHistory.recentStateUpdates.isEmpty {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("Recent learner-state updates")
+                            .font(.headline)
+                        ForEach(state.practiceHistory.recentStateUpdates.prefix(6)) { update in
+                            VStack(alignment: .leading, spacing: 4) {
+                                HStack {
+                                    Text("\(displaySkillTitle(for: update.skillID)) · \(displayName(for: update.sourceType))")
+                                        .font(.subheadline.weight(.medium))
+                                    Spacer()
+                                    Text(update.appliedToRecommendations ? "Applied" : "Shadow")
+                                        .font(.caption)
+                                        .foregroundStyle(update.appliedToRecommendations ? .green : .secondary)
+                                }
+                                Text("Δ control \(signedPercent(update.deltaControl)) · Δ consistency \(signedPercent(update.deltaConsistency)) · Δ auto \(signedPercent(update.deltaAutomaticity))")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                Text(formattedReasonCodes(update.reasonCodes))
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                            Divider()
+                        }
                     }
                 }
             }
@@ -673,8 +899,11 @@ struct ContentView: View {
                 KeyValueRow(label: "Last observed key event", value: timestampLabel(state.tapHealth.lastEventAt))
                 KeyValueRow(label: "Tap note", value: state.tapHealth.statusNote)
                 KeyValueRow(label: "Secure input", value: secureInputLabel)
+                KeyValueRow(label: "Keyboard layout", value: "\(state.trustState.keyboardLayoutName) (\(state.trustState.keyboardLayoutID))")
+                KeyValueRow(label: "Keyboard device class", value: state.trustState.keyboardDeviceClass)
                 KeyValueRow(label: "Profile store", value: state.trustState.profileStorePath)
                 KeyValueRow(label: "Manual exclusions store", value: state.trustState.manualExclusionsStorePath)
+                KeyValueRow(label: "Evidence store", value: state.trustState.evidenceStorePath)
                 KeyValueRow(label: "Stores raw text", value: state.trustState.storesRawText ? "Yes" : "No")
                 KeyValueRow(label: "Stores literal n-grams", value: state.trustState.storesLiteralNGrams ? "Yes" : "No")
                 KeyValueRow(label: "Trust note", value: state.trustState.note)
@@ -892,6 +1121,10 @@ struct ContentView: View {
             .map { $0 }
     }
 
+    private var manualPracticeFamilies: [PracticeDrillFamily] {
+        [.sameHandLadders, .reachAndReturn, .alternationRails, .accuracyReset, .meteredFlow]
+    }
+
     private func addManualBundleIdentifier() {
         let trimmedValue = manualBundleIdentifier.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedValue.isEmpty else { return }
@@ -917,6 +1150,13 @@ struct ContentView: View {
             return "No data yet"
         }
         return date.formatted(date: .omitted, time: .standard)
+    }
+
+    private func dateTimeLabel(_ date: Date?) -> String {
+        guard let date else {
+            return "No data yet"
+        }
+        return date.formatted(date: .abbreviated, time: .shortened)
     }
 
     private func baselineFootnote(for baselineValue: Double) -> String {
@@ -968,6 +1208,160 @@ struct ContentView: View {
         case .mixedTransfer:
             return "Mixed Transfer"
         }
+    }
+
+    private func displaySkillTitle(for skillID: String) -> String {
+        state.learningModel.studentStates.first(where: { $0.id == skillID })?.title
+            ?? state.learningModel.skillNodes.first(where: { $0.id == skillID })?.name
+            ?? skillID
+    }
+
+    private func displayName(for weakness: WeaknessCategory) -> String {
+        switch weakness {
+        case .sameHandSequences:
+            return "Same-hand sequences"
+        case .reachPrecision:
+            return "Reach execution"
+        case .accuracyRecovery:
+            return "Accuracy recovery"
+        case .handHandoffs:
+            return "Hand handoffs"
+        case .flowConsistency:
+            return "Flow consistency"
+        }
+    }
+
+    private func displayName(for status: TargetConfirmationStatus) -> String {
+        switch status {
+        case .confirmed:
+            return "Confirmed"
+        case .unconfirmed:
+            return "Unconfirmed"
+        case .inconclusive:
+            return "Inconclusive"
+        }
+    }
+
+    private func displayName(for outcome: PracticeEvaluationOutcome?) -> String {
+        guard let outcome else { return "n/a" }
+        switch outcome {
+        case .improvedStrong:
+            return "Strong improvement"
+        case .improvedWeak:
+            return "Weak improvement"
+        case .flat:
+            return "No meaningful change"
+        case .worseWeak:
+            return "Weak regression"
+        case .worseStrong:
+            return "Strong regression"
+        case .inconclusive:
+            return "Inconclusive"
+        case .insufficientData:
+            return "Insufficient data"
+        case .expired:
+            return "Expired"
+        case .unavailable:
+            return "Unavailable"
+        }
+    }
+
+    private func displayName(for status: PassiveTransferTicketStatus) -> String {
+        switch status {
+        case .pending:
+            return "Pending"
+        case .resolved:
+            return "Resolved"
+        case .expired:
+            return "Expired"
+        case .unavailable:
+            return "Unavailable"
+        }
+    }
+
+    private func displayName(for mode: PracticeUpdateMode) -> String {
+        switch mode {
+        case .shadow:
+            return "Shadow only"
+        case .applied:
+            return "Applied"
+        }
+    }
+
+    private func displayName(for type: PracticeEvaluationType) -> String {
+        switch type {
+        case .postCheck:
+            return "Post-check"
+        case .nearTransferCheck:
+            return "Near-transfer"
+        }
+    }
+
+    private func displayName(for source: LearnerStateUpdateSource) -> String {
+        switch source {
+        case .sessionImmediate:
+            return "Immediate session"
+        case .nearTransfer:
+            return "Near-transfer"
+        case .passiveTransfer:
+            return "Passive transfer"
+        case .manual:
+            return "Manual"
+        case .migration:
+            return "Migration"
+        }
+    }
+
+    private func displayName(for kind: PracticeBlockKind) -> String {
+        switch kind {
+        case .confirmatoryProbe:
+            return "Confirmatory probe"
+        case .drill:
+            return "Drill"
+        case .postCheck:
+            return "Post-check"
+        case .nearTransferCheck:
+            return "Near-transfer"
+        }
+    }
+
+    private func displayName(for sufficiency: PracticeSufficiencyStatus) -> String {
+        switch sufficiency {
+        case .sufficient:
+            return "Sufficient"
+        case .insufficient:
+            return "Insufficient"
+        }
+    }
+
+    private func transferTicketStatusLabel(_ ticket: PassiveTransferTicketRecord) -> String {
+        let now = Date()
+        if now < ticket.earliestEligibleAt {
+            return "Waiting for cooldown before passive transfer measurement. Eligible at \(dateTimeLabel(ticket.earliestEligibleAt))."
+        }
+        return "Waiting for at least \(ticket.requiredPostSliceCount) compatible passive slices before \(dateTimeLabel(ticket.expiresAt))."
+    }
+
+    private func formattedReasonCodes(_ codes: [String]) -> String {
+        codes
+            .map { code in
+                code
+                    .replacingOccurrences(of: ":", with: " = ")
+                    .replacingOccurrences(of: "guardFailed", with: "guard failed")
+                    .replacingOccurrences(of: "guardPassed", with: "guard passed")
+                    .replacingOccurrences(of: "specificity", with: "specificity")
+                    .replacingOccurrences(of: "warmupLike", with: "warm-up-like")
+                    .replacingOccurrences(of: "insufficientSampleCount", with: "insufficient sample count")
+                    .replacingOccurrences(of: "missingMetricValue", with: "missing metric value")
+                    .replacingOccurrences(of: "appliedGatePassed", with: "applied gate passed")
+                    .replacingOccurrences(of: "appliedGateDeferred", with: "applied gate deferred")
+            }
+            .joined(separator: " · ")
+    }
+
+    private func signedPercent(_ value: Double) -> String {
+        let percent = Int((value * 100).rounded())
+        return percent >= 0 ? "+\(percent)%" : "\(percent)%"
     }
 
     private func displayName(for status: PracticeRuntimeStatus) -> String {

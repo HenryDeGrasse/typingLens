@@ -28,13 +28,13 @@ enum SkillGraphCatalog {
         SkillNode(id: ID.sameHandMedium, name: "Same-hand medium control", family: .coordination, level: .leaf, stage: .foundation, detail: "Medium-distance same-hand transitions that often expose rollover friction."),
         SkillNode(id: ID.sameHandLong, name: "Same-hand long control", family: .coordination, level: .leaf, stage: .fluent, detail: "Longer same-hand transitions that demand stronger preparation and accuracy."),
         SkillNode(id: ID.crossHandHandoff, name: "Cross-hand handoff", family: .coordination, level: .leaf, stage: .foundation, detail: "Alternating hand transitions that should feel smoother than same-hand sequences."),
-        SkillNode(id: ID.farReachPrecision, name: "Far reach precision", family: .reach, level: .leaf, stage: .foundation, detail: "Outer-zone and longer-distance movement precision."),
+        SkillNode(id: ID.farReachPrecision, name: "Far reach execution", family: .reach, level: .leaf, stage: .foundation, detail: "Outer-zone and longer-distance movement execution."),
         SkillNode(id: ID.correctionRecovery, name: "Correction recovery", family: .repair, level: .leaf, stage: .foundation, detail: "How quickly the typist recovers after corrections and restarts forward typing."),
         SkillNode(id: ID.burstRestartControl, name: "Burst restart control", family: .flow, level: .leaf, stage: .foundation, detail: "How quickly and cleanly the typist restarts after pauses inside a session."),
         SkillNode(id: ID.rhythmConsistency, name: "Rhythm consistency", family: .rhythm, level: .leaf, stage: .foundation, detail: "How stable the timing cadence feels inside normal typing bursts."),
 
         SkillNode(id: ID.handCoordination, name: "Hand coordination", family: .coordination, level: .aggregate, stage: .fluent, detail: "Aggregate coordination across same-hand and cross-hand transitions."),
-        SkillNode(id: ID.reachPrecision, name: "Reach precision", family: .reach, level: .aggregate, stage: .fluent, detail: "Aggregate precision for larger or more awkward keyboard travel."),
+        SkillNode(id: ID.reachPrecision, name: "Reach execution", family: .reach, level: .aggregate, stage: .fluent, detail: "Aggregate execution for larger or more awkward keyboard travel."),
         SkillNode(id: ID.repairEfficiency, name: "Repair efficiency", family: .repair, level: .aggregate, stage: .fluent, detail: "Aggregate skill for handling mistakes without losing too much time or flow."),
         SkillNode(id: ID.flowFluency, name: "Flow fluency", family: .flow, level: .aggregate, stage: .fluent, detail: "Aggregate fluency across pauses, bursts, and restarts."),
         SkillNode(id: ID.rhythmStability, name: "Rhythm stability", family: .rhythm, level: .aggregate, stage: .fluent, detail: "Aggregate stability of timing across core typing behavior."),
@@ -82,6 +82,15 @@ enum LearningModelEngine {
             primaryWeakness: primaryWeakness,
             recommendedSession: sessionPlan
         )
+    }
+
+    static func manualPracticeRecommendation(for family: PracticeDrillFamily) -> (WeaknessAssessment, PracticeSessionPlan) {
+        let weakness = manualWeakness(for: family)
+        return (weakness, makePracticePlan(for: weakness))
+    }
+
+    static func recommendedSession(for weakness: WeaknessAssessment) -> PracticeSessionPlan {
+        makePracticePlan(for: weakness)
     }
 
     private static func buildLeafStates(from snapshot: TypingProfileSnapshot) -> [StudentSkillState] {
@@ -162,7 +171,7 @@ enum LearningModelEngine {
             ),
             StudentSkillState(
                 id: SkillGraphCatalog.ID.farReachPrecision,
-                title: "Far reach precision",
+                title: "Far reach execution",
                 current: SkillDimensionState(
                     control: scoreLowerIsBetter(backspaceRatio, good: 1.0, bad: 1.8),
                     automaticity: scoreLowerIsBetter(farToNearRatio, good: 1.0, bad: 1.4),
@@ -230,7 +239,7 @@ enum LearningModelEngine {
             ),
             aggregateState(
                 id: SkillGraphCatalog.ID.reachPrecision,
-                title: "Reach precision",
+                title: "Reach execution",
                 leafStates: leafStates,
                 memberIDs: [SkillGraphCatalog.ID.farReachPrecision],
                 note: "Rolls up outer-zone and larger-travel control."
@@ -365,7 +374,7 @@ enum LearningModelEngine {
             weaknesses.append(
                 WeaknessAssessment(
                     category: .reachPrecision,
-                    title: "Longer reaches are your primary friction point",
+                    title: "Longer reach execution is your primary friction point",
                     summary: "Farther travel buckets are materially slower than near buckets.",
                     severity: severity(for: farRatio, trigger: 1.22),
                     confidence: confidenceFor(evidenceCount: min(near.sampleCount, far.sampleCount), baselineDays: baselineDays),
@@ -464,12 +473,91 @@ enum LearningModelEngine {
         weaknesses.sorted(by: weaknessPrioritySort).first
     }
 
-    private static func makePracticePlan(for weakness: WeaknessAssessment) -> PracticeSessionPlan {
-        let drillCount: Int = switch weakness.severity {
-        case .mild: 2
-        case .moderate: 3
-        case .strong: 4
+    private static func manualWeakness(for family: PracticeDrillFamily) -> WeaknessAssessment {
+        switch family {
+        case .sameHandLadders:
+            return WeaknessAssessment(
+                category: .sameHandSequences,
+                title: "Manual tester override · Same-hand sequences",
+                summary: "Run a controlled same-hand session even if passive evidence is not yet strong enough to recommend it automatically.",
+                severity: .moderate,
+                confidence: .low,
+                lifecycleState: .monitoring,
+                supportingSignals: ["manualOverride"],
+                targetSkillIDs: [SkillGraphCatalog.ID.sameHandShort, SkillGraphCatalog.ID.sameHandMedium],
+                recommendedDrill: .sameHandLadders,
+                rationale: "Tester override for same-hand coordination and rollover friction."
+            )
+        case .reachAndReturn:
+            return WeaknessAssessment(
+                category: .reachPrecision,
+                title: "Manual tester override · Reach execution",
+                summary: "Run a controlled reach session even if passive evidence is not yet strong enough to recommend it automatically.",
+                severity: .moderate,
+                confidence: .low,
+                lifecycleState: .monitoring,
+                supportingSignals: ["manualOverride"],
+                targetSkillIDs: [SkillGraphCatalog.ID.farReachPrecision],
+                recommendedDrill: .reachAndReturn,
+                rationale: "Tester override for longer reach execution."
+            )
+        case .alternationRails:
+            return WeaknessAssessment(
+                category: .handHandoffs,
+                title: "Manual tester override · Hand handoffs",
+                summary: "Run a controlled cross-hand handoff session even if passive evidence is not yet strong enough to recommend it automatically.",
+                severity: .moderate,
+                confidence: .low,
+                lifecycleState: .monitoring,
+                supportingSignals: ["manualOverride"],
+                targetSkillIDs: [SkillGraphCatalog.ID.crossHandHandoff],
+                recommendedDrill: .alternationRails,
+                rationale: "Tester override for alternation and handoff timing."
+            )
+        case .accuracyReset:
+            return WeaknessAssessment(
+                category: .accuracyRecovery,
+                title: "Manual tester override · Accuracy recovery",
+                summary: "Run a controlled recovery-focused session even if passive evidence is not yet strong enough to recommend it automatically.",
+                severity: .moderate,
+                confidence: .low,
+                lifecycleState: .monitoring,
+                supportingSignals: ["manualOverride"],
+                targetSkillIDs: [SkillGraphCatalog.ID.correctionRecovery],
+                recommendedDrill: .accuracyReset,
+                rationale: "Tester override for correction recovery and reset control."
+            )
+        case .meteredFlow:
+            return WeaknessAssessment(
+                category: .flowConsistency,
+                title: "Manual tester override · Flow consistency",
+                summary: "Run a controlled flow session even if passive evidence is not yet strong enough to recommend it automatically.",
+                severity: .mild,
+                confidence: .low,
+                lifecycleState: .monitoring,
+                supportingSignals: ["manualOverride"],
+                targetSkillIDs: [SkillGraphCatalog.ID.burstRestartControl, SkillGraphCatalog.ID.rhythmConsistency],
+                recommendedDrill: .meteredFlow,
+                rationale: "Tester override for flow and cadence stability."
+            )
+        case .mixedTransfer:
+            return WeaknessAssessment(
+                category: .sameHandSequences,
+                title: "Manual tester override · Mixed transfer",
+                summary: "Run a mixed session for neutral tester coverage.",
+                severity: .mild,
+                confidence: .low,
+                lifecycleState: .monitoring,
+                supportingSignals: ["manualOverride"],
+                targetSkillIDs: [SkillGraphCatalog.ID.sameHandShort],
+                recommendedDrill: .mixedTransfer,
+                rationale: "Tester override for neutral mixed transfer coverage."
+            )
         }
+    }
+
+    private static func makePracticePlan(for weakness: WeaknessAssessment) -> PracticeSessionPlan {
+        let drillCount = 2
 
         let confirmatoryProbe = PracticeBlock(
             kind: .confirmatoryProbe,
@@ -500,20 +588,21 @@ enum LearningModelEngine {
             targetSkillIDs: weakness.targetSkillIDs
         )
 
-        let transferCheck = PracticeBlock(
-            kind: .transferCheck,
-            title: "Transfer check",
-            detail: "Later passive typing should show at least a small improvement in the same abstract skill bucket before this weakness is treated as transferring.",
-            durationSeconds: 0,
-            drillFamily: nil,
+        let nearTransferCheck = PracticeBlock(
+            kind: .nearTransferCheck,
+            title: "Near-transfer check",
+            detail: "Run a short adjacent-material check to see whether gains hold on similar but not identical prompt patterns.",
+            durationSeconds: 25,
+            drillFamily: .mixedTransfer,
             targetSkillIDs: weakness.targetSkillIDs
         )
 
         return PracticeSessionPlan(
             primaryFocusTitle: weakness.title,
             rationale: weakness.rationale,
-            blocks: [confirmatoryProbe] + drillBlocks + [postCheck, transferCheck],
-            followUp: "Stay with one primary weakness at a time. If immediate post-checks improve but passive transfer does not, keep the same drill family and lower the intensity before adding a second weakness."
+            blocks: [confirmatoryProbe] + drillBlocks + [postCheck, nearTransferCheck],
+            followUp: "Stay with one primary weakness at a time. If immediate checks improve but later passive transfer does not, keep the same drill family and lower the intensity before adding a second weakness.",
+            passiveTransferNote: "Later passive typing should show at least a small improvement in the same abstract skill bucket before this weakness is treated as transferring."
         )
     }
 

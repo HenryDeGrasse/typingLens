@@ -451,6 +451,10 @@ public struct TrustState: Equatable, Sendable {
     public var secureInputState: SecureInputState
     public var profileStorePath: String
     public var manualExclusionsStorePath: String
+    public var evidenceStorePath: String
+    public var keyboardLayoutID: String
+    public var keyboardLayoutName: String
+    public var keyboardDeviceClass: String
     public var storesRawText: Bool
     public var storesLiteralNGrams: Bool
     public var note: String
@@ -459,6 +463,10 @@ public struct TrustState: Equatable, Sendable {
         secureInputState: SecureInputState = .unavailable,
         profileStorePath: String = "",
         manualExclusionsStorePath: String = "",
+        evidenceStorePath: String = "",
+        keyboardLayoutID: String = "unknown",
+        keyboardLayoutName: String = "Unknown Layout",
+        keyboardDeviceClass: String = "unknown-device",
         storesRawText: Bool = false,
         storesLiteralNGrams: Bool = false,
         note: String = "Typing Lens stores profile summaries locally and keeps raw preview debug-only in memory."
@@ -466,6 +474,10 @@ public struct TrustState: Equatable, Sendable {
         self.secureInputState = secureInputState
         self.profileStorePath = profileStorePath
         self.manualExclusionsStorePath = manualExclusionsStorePath
+        self.evidenceStorePath = evidenceStorePath
+        self.keyboardLayoutID = keyboardLayoutID
+        self.keyboardLayoutName = keyboardLayoutName
+        self.keyboardDeviceClass = keyboardDeviceClass
         self.storesRawText = storesRawText
         self.storesLiteralNGrams = storesLiteralNGrams
         self.note = note
@@ -718,7 +730,7 @@ public enum PracticeBlockKind: String, Codable, Sendable {
     case confirmatoryProbe
     case drill
     case postCheck
-    case transferCheck
+    case nearTransferCheck
 }
 
 public struct SkillNode: Identifiable, Equatable, Sendable {
@@ -786,6 +798,24 @@ public struct SkillDimensionState: Equatable, Codable, Sendable {
         self.automaticity = automaticity
         self.consistency = consistency
         self.stability = stability
+    }
+
+    public func adding(_ other: SkillDimensionState) -> SkillDimensionState {
+        SkillDimensionState(
+            control: control + other.control,
+            automaticity: automaticity + other.automaticity,
+            consistency: consistency + other.consistency,
+            stability: stability + other.stability
+        )
+    }
+
+    public func clamped(to range: ClosedRange<Double> = 0...1) -> SkillDimensionState {
+        SkillDimensionState(
+            control: min(max(control, range.lowerBound), range.upperBound),
+            automaticity: min(max(automaticity, range.lowerBound), range.upperBound),
+            consistency: min(max(consistency, range.lowerBound), range.upperBound),
+            stability: min(max(stability, range.lowerBound), range.upperBound)
+        )
     }
 }
 
@@ -890,17 +920,20 @@ public struct PracticeSessionPlan: Equatable, Sendable {
     public let rationale: String
     public let blocks: [PracticeBlock]
     public let followUp: String
+    public let passiveTransferNote: String?
 
     public init(
         primaryFocusTitle: String,
         rationale: String,
         blocks: [PracticeBlock],
-        followUp: String
+        followUp: String,
+        passiveTransferNote: String? = nil
     ) {
         self.primaryFocusTitle = primaryFocusTitle
         self.rationale = rationale
         self.blocks = blocks
         self.followUp = followUp
+        self.passiveTransferNote = passiveTransferNote
     }
 }
 
@@ -992,7 +1025,7 @@ public struct PracticeRuntimeSnapshot: Equatable, Sendable {
     public var backspaceCount: Int
     public var completedBlocks: [PracticeBlockResult]
     public var followUp: String?
-    public var laterTransferNote: String?
+    public var passiveTransferNote: String?
     public var note: String
     public var requiresAppFocus: Bool
 
@@ -1017,7 +1050,7 @@ public struct PracticeRuntimeSnapshot: Equatable, Sendable {
         backspaceCount: Int = 0,
         completedBlocks: [PracticeBlockResult] = [],
         followUp: String? = nil,
-        laterTransferNote: String? = nil,
+        passiveTransferNote: String? = nil,
         note: String = "Start a recommended session to enter the in-app practice runtime.",
         requiresAppFocus: Bool = false
     ) {
@@ -1041,7 +1074,7 @@ public struct PracticeRuntimeSnapshot: Equatable, Sendable {
         self.backspaceCount = backspaceCount
         self.completedBlocks = completedBlocks
         self.followUp = followUp
-        self.laterTransferNote = laterTransferNote
+        self.passiveTransferNote = passiveTransferNote
         self.note = note
         self.requiresAppFocus = requiresAppFocus
     }
@@ -1054,6 +1087,593 @@ public struct PracticeRuntimeSnapshot: Equatable, Sendable {
         let total = correctCharacterCount + incorrectCharacterCount
         guard total > 0 else { return 0 }
         return Double(correctCharacterCount) / Double(total)
+    }
+}
+
+public enum PracticeMetricDirection: String, Codable, Sendable {
+    case lowerIsBetter
+    case higherIsBetter
+}
+
+public enum PracticeSufficiencyStatus: String, Codable, Sendable {
+    case sufficient
+    case insufficient
+}
+
+public enum TargetConfirmationStatus: String, Codable, Sendable {
+    case confirmed
+    case unconfirmed
+    case inconclusive
+}
+
+public enum PracticeEvaluationType: String, Codable, Sendable {
+    case postCheck
+    case nearTransferCheck
+}
+
+public enum PracticeEvaluationOutcome: String, Codable, Sendable {
+    case improvedStrong
+    case improvedWeak
+    case flat
+    case worseWeak
+    case worseStrong
+    case inconclusive
+    case insufficientData
+    case expired
+    case unavailable
+}
+
+public enum PracticeUpdateMode: String, Codable, Sendable {
+    case shadow
+    case applied
+}
+
+public enum PassiveTransferTicketStatus: String, Codable, Sendable {
+    case pending
+    case resolved
+    case expired
+    case unavailable
+}
+
+public enum LearnerStateUpdateSource: String, Codable, Sendable {
+    case sessionImmediate
+    case nearTransfer
+    case passiveTransfer
+    case manual
+    case migration
+}
+
+public struct ModelVersionStamp: Identifiable, Equatable, Codable, Sendable {
+    public let id: String
+    public let createdAt: Date
+    public let appBuild: String
+    public let passiveFeatureVersion: Int
+    public let practiceScorerVersion: Int
+    public let skillGraphVersion: Int
+    public let assessmentBlueprintVersion: Int
+    public let immediateEvaluatorVersion: Int
+    public let passiveTransferEvaluatorVersion: Int
+    public let learnerUpdatePolicyVersion: Int
+    public let keyboardMapVersion: Int
+
+    public init(
+        id: String,
+        createdAt: Date,
+        appBuild: String,
+        passiveFeatureVersion: Int,
+        practiceScorerVersion: Int,
+        skillGraphVersion: Int,
+        assessmentBlueprintVersion: Int,
+        immediateEvaluatorVersion: Int,
+        passiveTransferEvaluatorVersion: Int,
+        learnerUpdatePolicyVersion: Int,
+        keyboardMapVersion: Int
+    ) {
+        self.id = id
+        self.createdAt = createdAt
+        self.appBuild = appBuild
+        self.passiveFeatureVersion = passiveFeatureVersion
+        self.practiceScorerVersion = practiceScorerVersion
+        self.skillGraphVersion = skillGraphVersion
+        self.assessmentBlueprintVersion = assessmentBlueprintVersion
+        self.immediateEvaluatorVersion = immediateEvaluatorVersion
+        self.passiveTransferEvaluatorVersion = passiveTransferEvaluatorVersion
+        self.learnerUpdatePolicyVersion = learnerUpdatePolicyVersion
+        self.keyboardMapVersion = keyboardMapVersion
+    }
+}
+
+public struct PracticeBlockMetricSnapshot: Identifiable, Equatable, Codable, Sendable {
+    public var id: String { "\(metricKey):\(cohortKey)" }
+
+    public let metricKey: String
+    public let cohortKey: String
+    public let sampleCount: Int
+    public let scalarValue: Double?
+    public let dispersionValue: Double?
+    public let numerator: Double?
+    public let denominator: Double?
+    public let betterDirection: PracticeMetricDirection
+
+    public init(
+        metricKey: String,
+        cohortKey: String,
+        sampleCount: Int,
+        scalarValue: Double? = nil,
+        dispersionValue: Double? = nil,
+        numerator: Double? = nil,
+        denominator: Double? = nil,
+        betterDirection: PracticeMetricDirection
+    ) {
+        self.metricKey = metricKey
+        self.cohortKey = cohortKey
+        self.sampleCount = sampleCount
+        self.scalarValue = scalarValue
+        self.dispersionValue = dispersionValue
+        self.numerator = numerator
+        self.denominator = denominator
+        self.betterDirection = betterDirection
+    }
+}
+
+public struct RecommendationDecisionRecord: Identifiable, Equatable, Codable, Sendable {
+    public let id: UUID
+    public let createdAt: Date
+    public let selectedSkillID: String
+    public let selectedWeakness: WeaknessCategory
+    public let candidateSkillIDs: [String]
+    public let candidateReasonCodes: [String]
+    public let selectedBecauseReasonCode: String
+    public let passiveSnapshotReference: String
+    public let hysteresisApplied: Bool
+    public let suppressedBecausePendingTransfer: Bool
+    public let modelVersionStampID: String
+
+    public init(
+        id: UUID = UUID(),
+        createdAt: Date,
+        selectedSkillID: String,
+        selectedWeakness: WeaknessCategory,
+        candidateSkillIDs: [String],
+        candidateReasonCodes: [String],
+        selectedBecauseReasonCode: String,
+        passiveSnapshotReference: String,
+        hysteresisApplied: Bool,
+        suppressedBecausePendingTransfer: Bool,
+        modelVersionStampID: String
+    ) {
+        self.id = id
+        self.createdAt = createdAt
+        self.selectedSkillID = selectedSkillID
+        self.selectedWeakness = selectedWeakness
+        self.candidateSkillIDs = candidateSkillIDs
+        self.candidateReasonCodes = candidateReasonCodes
+        self.selectedBecauseReasonCode = selectedBecauseReasonCode
+        self.passiveSnapshotReference = passiveSnapshotReference
+        self.hysteresisApplied = hysteresisApplied
+        self.suppressedBecausePendingTransfer = suppressedBecausePendingTransfer
+        self.modelVersionStampID = modelVersionStampID
+    }
+}
+
+public struct PracticeBlockSummaryRecord: Identifiable, Equatable, Codable, Sendable {
+    public let id: UUID
+    public let blockIndex: Int
+    public let title: String
+    public let role: PracticeBlockKind
+    public let skillID: String
+    public let weakness: WeaknessCategory
+    public let assessmentBlueprintDescriptor: String
+    public let durationMilliseconds: Int
+    public let activeTypingMilliseconds: Int
+    public let charsPresented: Int
+    public let charsEntered: Int
+    public let correctChars: Int
+    public let incorrectChars: Int
+    public let correctedErrorEpisodeCount: Int
+    public let uncorrectedErrorEpisodeCount: Int
+    public let backspaceTapCount: Int
+    public let heldDeleteEpisodeCount: Int
+    public let promptsCompleted: Int
+    public let sufficiencyStatus: PracticeSufficiencyStatus
+    public let metrics: [PracticeBlockMetricSnapshot]
+
+    public init(
+        id: UUID = UUID(),
+        blockIndex: Int,
+        title: String,
+        role: PracticeBlockKind,
+        skillID: String,
+        weakness: WeaknessCategory,
+        assessmentBlueprintDescriptor: String,
+        durationMilliseconds: Int,
+        activeTypingMilliseconds: Int,
+        charsPresented: Int,
+        charsEntered: Int,
+        correctChars: Int,
+        incorrectChars: Int,
+        correctedErrorEpisodeCount: Int,
+        uncorrectedErrorEpisodeCount: Int,
+        backspaceTapCount: Int,
+        heldDeleteEpisodeCount: Int,
+        promptsCompleted: Int,
+        sufficiencyStatus: PracticeSufficiencyStatus,
+        metrics: [PracticeBlockMetricSnapshot]
+    ) {
+        self.id = id
+        self.blockIndex = blockIndex
+        self.title = title
+        self.role = role
+        self.skillID = skillID
+        self.weakness = weakness
+        self.assessmentBlueprintDescriptor = assessmentBlueprintDescriptor
+        self.durationMilliseconds = durationMilliseconds
+        self.activeTypingMilliseconds = activeTypingMilliseconds
+        self.charsPresented = charsPresented
+        self.charsEntered = charsEntered
+        self.correctChars = correctChars
+        self.incorrectChars = incorrectChars
+        self.correctedErrorEpisodeCount = correctedErrorEpisodeCount
+        self.uncorrectedErrorEpisodeCount = uncorrectedErrorEpisodeCount
+        self.backspaceTapCount = backspaceTapCount
+        self.heldDeleteEpisodeCount = heldDeleteEpisodeCount
+        self.promptsCompleted = promptsCompleted
+        self.sufficiencyStatus = sufficiencyStatus
+        self.metrics = metrics
+    }
+
+    public var accuracy: Double {
+        let total = correctChars + incorrectChars
+        guard total > 0 else { return 0 }
+        return Double(correctChars) / Double(total)
+    }
+}
+
+public struct ImmediateEvaluationRecord: Identifiable, Equatable, Codable, Sendable {
+    public let id: UUID
+    public let sessionID: UUID
+    public let evaluationType: PracticeEvaluationType
+    public let baselineBlockID: UUID
+    public let candidateBlockID: UUID
+    public let skillID: String
+    public let weakness: WeaknessCategory
+    public let primaryMetricKey: String
+    public let baselineValue: Double?
+    public let candidateValue: Double?
+    public let deltaAbsolute: Double?
+    public let deltaRelative: Double?
+    public let guardOutcomeCodes: [String]
+    public let specificityControlOutcome: String?
+    public let outcome: PracticeEvaluationOutcome
+    public let evidenceWeight: Int
+    public let reasonCodes: [String]
+    public let evaluatorVersion: Int
+
+    public init(
+        id: UUID = UUID(),
+        sessionID: UUID,
+        evaluationType: PracticeEvaluationType,
+        baselineBlockID: UUID,
+        candidateBlockID: UUID,
+        skillID: String,
+        weakness: WeaknessCategory,
+        primaryMetricKey: String,
+        baselineValue: Double?,
+        candidateValue: Double?,
+        deltaAbsolute: Double?,
+        deltaRelative: Double?,
+        guardOutcomeCodes: [String],
+        specificityControlOutcome: String?,
+        outcome: PracticeEvaluationOutcome,
+        evidenceWeight: Int,
+        reasonCodes: [String],
+        evaluatorVersion: Int
+    ) {
+        self.id = id
+        self.sessionID = sessionID
+        self.evaluationType = evaluationType
+        self.baselineBlockID = baselineBlockID
+        self.candidateBlockID = candidateBlockID
+        self.skillID = skillID
+        self.weakness = weakness
+        self.primaryMetricKey = primaryMetricKey
+        self.baselineValue = baselineValue
+        self.candidateValue = candidateValue
+        self.deltaAbsolute = deltaAbsolute
+        self.deltaRelative = deltaRelative
+        self.guardOutcomeCodes = guardOutcomeCodes
+        self.specificityControlOutcome = specificityControlOutcome
+        self.outcome = outcome
+        self.evidenceWeight = evidenceWeight
+        self.reasonCodes = reasonCodes
+        self.evaluatorVersion = evaluatorVersion
+    }
+}
+
+public struct PassiveActiveSliceRecord: Identifiable, Equatable, Codable, Sendable {
+    public let id: UUID
+    public let startedAt: Date
+    public let endedAt: Date
+    public let activeTypingMilliseconds: Int
+    public let totalKeyDowns: Int
+    public let keyboardLayoutID: String
+    public let keyboardDeviceClass: String
+    public let modelVersionStampID: String
+    public let summary: TypingProfileSummary
+
+    public init(
+        id: UUID = UUID(),
+        startedAt: Date,
+        endedAt: Date,
+        activeTypingMilliseconds: Int,
+        totalKeyDowns: Int,
+        keyboardLayoutID: String,
+        keyboardDeviceClass: String,
+        modelVersionStampID: String,
+        summary: TypingProfileSummary
+    ) {
+        self.id = id
+        self.startedAt = startedAt
+        self.endedAt = endedAt
+        self.activeTypingMilliseconds = activeTypingMilliseconds
+        self.totalKeyDowns = totalKeyDowns
+        self.keyboardLayoutID = keyboardLayoutID
+        self.keyboardDeviceClass = keyboardDeviceClass
+        self.modelVersionStampID = modelVersionStampID
+        self.summary = summary
+    }
+}
+
+public struct PassiveTransferTicketRecord: Identifiable, Equatable, Codable, Sendable {
+    public let id: UUID
+    public let sessionID: UUID
+    public let skillID: String
+    public let weakness: WeaknessCategory
+    public let createdAt: Date
+    public let keyboardLayoutID: String
+    public let keyboardDeviceClass: String
+    public let baselineSliceIDs: [UUID]
+    public let baselineMetricSnapshot: [String: Double]
+    public let earliestEligibleAt: Date
+    public let expiresAt: Date
+    public let requiredPostSliceCount: Int
+    public let requiredSampleCounts: [String: Int]
+    public let status: PassiveTransferTicketStatus
+
+    public init(
+        id: UUID = UUID(),
+        sessionID: UUID,
+        skillID: String,
+        weakness: WeaknessCategory,
+        createdAt: Date,
+        keyboardLayoutID: String,
+        keyboardDeviceClass: String,
+        baselineSliceIDs: [UUID],
+        baselineMetricSnapshot: [String: Double],
+        earliestEligibleAt: Date,
+        expiresAt: Date,
+        requiredPostSliceCount: Int,
+        requiredSampleCounts: [String: Int],
+        status: PassiveTransferTicketStatus
+    ) {
+        self.id = id
+        self.sessionID = sessionID
+        self.skillID = skillID
+        self.weakness = weakness
+        self.createdAt = createdAt
+        self.keyboardLayoutID = keyboardLayoutID
+        self.keyboardDeviceClass = keyboardDeviceClass
+        self.baselineSliceIDs = baselineSliceIDs
+        self.baselineMetricSnapshot = baselineMetricSnapshot
+        self.earliestEligibleAt = earliestEligibleAt
+        self.expiresAt = expiresAt
+        self.requiredPostSliceCount = requiredPostSliceCount
+        self.requiredSampleCounts = requiredSampleCounts
+        self.status = status
+    }
+
+    public func updating(status: PassiveTransferTicketStatus) -> PassiveTransferTicketRecord {
+        PassiveTransferTicketRecord(
+            id: id,
+            sessionID: sessionID,
+            skillID: skillID,
+            weakness: weakness,
+            createdAt: createdAt,
+            keyboardLayoutID: keyboardLayoutID,
+            keyboardDeviceClass: keyboardDeviceClass,
+            baselineSliceIDs: baselineSliceIDs,
+            baselineMetricSnapshot: baselineMetricSnapshot,
+            earliestEligibleAt: earliestEligibleAt,
+            expiresAt: expiresAt,
+            requiredPostSliceCount: requiredPostSliceCount,
+            requiredSampleCounts: requiredSampleCounts,
+            status: status
+        )
+    }
+}
+
+public struct PassiveTransferResultRecord: Identifiable, Equatable, Codable, Sendable {
+    public let id: UUID
+    public let ticketID: UUID
+    public let resolvedAt: Date
+    public let baselineSliceIDs: [UUID]
+    public let postSliceIDs: [UUID]
+    public let outcome: PracticeEvaluationOutcome
+    public let evidenceWeight: Int
+    public let reasonCodes: [String]
+    public let metricDeltaSummary: [String: Double]
+    public let evaluatorVersion: Int
+
+    public init(
+        id: UUID = UUID(),
+        ticketID: UUID,
+        resolvedAt: Date,
+        baselineSliceIDs: [UUID],
+        postSliceIDs: [UUID],
+        outcome: PracticeEvaluationOutcome,
+        evidenceWeight: Int,
+        reasonCodes: [String],
+        metricDeltaSummary: [String: Double],
+        evaluatorVersion: Int
+    ) {
+        self.id = id
+        self.ticketID = ticketID
+        self.resolvedAt = resolvedAt
+        self.baselineSliceIDs = baselineSliceIDs
+        self.postSliceIDs = postSliceIDs
+        self.outcome = outcome
+        self.evidenceWeight = evidenceWeight
+        self.reasonCodes = reasonCodes
+        self.metricDeltaSummary = metricDeltaSummary
+        self.evaluatorVersion = evaluatorVersion
+    }
+}
+
+public struct LearnerStateUpdateRecord: Identifiable, Equatable, Codable, Sendable {
+    public let id: UUID
+    public let createdAt: Date
+    public let skillID: String
+    public let sourceType: LearnerStateUpdateSource
+    public let sourceSessionID: UUID?
+    public let sourceEvaluationID: UUID?
+    public let deltaControl: Double
+    public let deltaConsistency: Double
+    public let deltaAutomaticity: Double
+    public let deltaStability: Double
+    public let evidenceWeight: Int
+    public let reasonCodes: [String]
+    public let policyVersion: Int
+    public let appliedToRecommendations: Bool
+
+    public init(
+        id: UUID = UUID(),
+        createdAt: Date,
+        skillID: String,
+        sourceType: LearnerStateUpdateSource,
+        sourceSessionID: UUID?,
+        sourceEvaluationID: UUID?,
+        deltaControl: Double,
+        deltaConsistency: Double,
+        deltaAutomaticity: Double,
+        deltaStability: Double,
+        evidenceWeight: Int,
+        reasonCodes: [String],
+        policyVersion: Int,
+        appliedToRecommendations: Bool
+    ) {
+        self.id = id
+        self.createdAt = createdAt
+        self.skillID = skillID
+        self.sourceType = sourceType
+        self.sourceSessionID = sourceSessionID
+        self.sourceEvaluationID = sourceEvaluationID
+        self.deltaControl = deltaControl
+        self.deltaConsistency = deltaConsistency
+        self.deltaAutomaticity = deltaAutomaticity
+        self.deltaStability = deltaStability
+        self.evidenceWeight = evidenceWeight
+        self.reasonCodes = reasonCodes
+        self.policyVersion = policyVersion
+        self.appliedToRecommendations = appliedToRecommendations
+    }
+
+    public func applying(toRecommendations: Bool, extraReasonCodes: [String] = []) -> LearnerStateUpdateRecord {
+        LearnerStateUpdateRecord(
+            id: id,
+            createdAt: createdAt,
+            skillID: skillID,
+            sourceType: sourceType,
+            sourceSessionID: sourceSessionID,
+            sourceEvaluationID: sourceEvaluationID,
+            deltaControl: deltaControl,
+            deltaConsistency: deltaConsistency,
+            deltaAutomaticity: deltaAutomaticity,
+            deltaStability: deltaStability,
+            evidenceWeight: evidenceWeight,
+            reasonCodes: reasonCodes + extraReasonCodes,
+            policyVersion: policyVersion,
+            appliedToRecommendations: toRecommendations
+        )
+    }
+}
+
+public struct PracticeSessionSummaryRecord: Identifiable, Equatable, Codable, Sendable {
+    public let id: UUID
+    public let startedAt: Date
+    public let endedAt: Date
+    public let selectedSkillID: String
+    public let selectedWeakness: WeaknessCategory
+    public let recommendationDecisionID: UUID
+    public let modelVersionStampID: String
+    public let targetConfirmationStatus: TargetConfirmationStatus
+    public let immediateOutcome: PracticeEvaluationOutcome?
+    public let nearTransferOutcome: PracticeEvaluationOutcome?
+    public let passiveTransferTicketID: UUID?
+    public let updateMode: PracticeUpdateMode
+    public let keyboardLayoutID: String
+    public let keyboardDeviceClass: String
+    public let blockSummaries: [PracticeBlockSummaryRecord]
+
+    public init(
+        id: UUID = UUID(),
+        startedAt: Date,
+        endedAt: Date,
+        selectedSkillID: String,
+        selectedWeakness: WeaknessCategory,
+        recommendationDecisionID: UUID,
+        modelVersionStampID: String,
+        targetConfirmationStatus: TargetConfirmationStatus,
+        immediateOutcome: PracticeEvaluationOutcome?,
+        nearTransferOutcome: PracticeEvaluationOutcome?,
+        passiveTransferTicketID: UUID?,
+        updateMode: PracticeUpdateMode,
+        keyboardLayoutID: String,
+        keyboardDeviceClass: String,
+        blockSummaries: [PracticeBlockSummaryRecord]
+    ) {
+        self.id = id
+        self.startedAt = startedAt
+        self.endedAt = endedAt
+        self.selectedSkillID = selectedSkillID
+        self.selectedWeakness = selectedWeakness
+        self.recommendationDecisionID = recommendationDecisionID
+        self.modelVersionStampID = modelVersionStampID
+        self.targetConfirmationStatus = targetConfirmationStatus
+        self.immediateOutcome = immediateOutcome
+        self.nearTransferOutcome = nearTransferOutcome
+        self.passiveTransferTicketID = passiveTransferTicketID
+        self.updateMode = updateMode
+        self.keyboardLayoutID = keyboardLayoutID
+        self.keyboardDeviceClass = keyboardDeviceClass
+        self.blockSummaries = blockSummaries
+    }
+}
+
+public struct PracticeHistorySnapshot: Equatable, Codable, Sendable {
+    public var modelVersionStamp: ModelVersionStamp?
+    public var recentDecisions: [RecommendationDecisionRecord]
+    public var recentSessions: [PracticeSessionSummaryRecord]
+    public var recentEvaluations: [ImmediateEvaluationRecord]
+    public var pendingTransferTickets: [PassiveTransferTicketRecord]
+    public var recentTransferResults: [PassiveTransferResultRecord]
+    public var recentStateUpdates: [LearnerStateUpdateRecord]
+
+    public init(
+        modelVersionStamp: ModelVersionStamp? = nil,
+        recentDecisions: [RecommendationDecisionRecord] = [],
+        recentSessions: [PracticeSessionSummaryRecord] = [],
+        recentEvaluations: [ImmediateEvaluationRecord] = [],
+        pendingTransferTickets: [PassiveTransferTicketRecord] = [],
+        recentTransferResults: [PassiveTransferResultRecord] = [],
+        recentStateUpdates: [LearnerStateUpdateRecord] = []
+    ) {
+        self.modelVersionStamp = modelVersionStamp
+        self.recentDecisions = recentDecisions
+        self.recentSessions = recentSessions
+        self.recentEvaluations = recentEvaluations
+        self.pendingTransferTickets = pendingTransferTickets
+        self.recentTransferResults = recentTransferResults
+        self.recentStateUpdates = recentStateUpdates
     }
 }
 
@@ -1090,6 +1710,7 @@ public struct CaptureDashboardState: Equatable, Sendable {
     public var profileSnapshot: TypingProfileSnapshot
     public var learningModel: LearningModelSnapshot
     public var practiceRuntime: PracticeRuntimeSnapshot
+    public var practiceHistory: PracticeHistorySnapshot
     public var advancedDiagnostics: AggregateTypingMetrics
     public var trustState: TrustState
     public var exclusionStatus: ExclusionStatus
@@ -1105,6 +1726,7 @@ public struct CaptureDashboardState: Equatable, Sendable {
         profileSnapshot: TypingProfileSnapshot = TypingProfileSnapshot(),
         learningModel: LearningModelSnapshot = LearningModelSnapshot(),
         practiceRuntime: PracticeRuntimeSnapshot = PracticeRuntimeSnapshot(),
+        practiceHistory: PracticeHistorySnapshot = PracticeHistorySnapshot(),
         advancedDiagnostics: AggregateTypingMetrics = AggregateTypingMetrics(),
         trustState: TrustState = TrustState(),
         exclusionStatus: ExclusionStatus = ExclusionStatus(),
@@ -1119,6 +1741,7 @@ public struct CaptureDashboardState: Equatable, Sendable {
         self.profileSnapshot = profileSnapshot
         self.learningModel = learningModel
         self.practiceRuntime = practiceRuntime
+        self.practiceHistory = practiceHistory
         self.advancedDiagnostics = advancedDiagnostics
         self.trustState = trustState
         self.exclusionStatus = exclusionStatus

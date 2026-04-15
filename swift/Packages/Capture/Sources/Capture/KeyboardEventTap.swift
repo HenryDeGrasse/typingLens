@@ -1,3 +1,4 @@
+import AppKit
 import Core
 import CoreGraphics
 import Foundation
@@ -11,6 +12,8 @@ struct ObservedKeyEvent {
     let timestamp: Date
     let phase: ObservedKeyEventPhase
     let keyCode: Int64
+    let keyboardType: Int64
+    let deviceID: Int64
     let kind: String
     let renderedValue: String
     let isBackspace: Bool
@@ -137,6 +140,7 @@ private extension ObservedKeyEvent {
         let rawValue = event.debugRenderedValue(for: keyCode)
         let isBackspace = keyCode == 51
         let phase: ObservedKeyEventPhase = type == .keyUp ? .keyUp : .keyDown
+        let deviceID = NSEvent(cgEvent: event).map { Int64($0.deviceID) } ?? -1
         let kind = switch phase {
         case .keyDown:
             isBackspace ? "backspaceDown" : "keyDown"
@@ -148,6 +152,8 @@ private extension ObservedKeyEvent {
             timestamp: Date(),
             phase: phase,
             keyCode: keyCode,
+            keyboardType: event.getIntegerValueField(.keyboardEventKeyboardType),
+            deviceID: deviceID,
             kind: kind,
             renderedValue: rawValue,
             isBackspace: isBackspace,

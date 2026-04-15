@@ -2,9 +2,34 @@ import Core
 import Foundation
 
 final class PracticeRuntimeEngine {
-    private struct RuntimeBlockState {
+    struct CompletedSessionArtifact {
+        let startedAt: Date
+        let endedAt: Date
+        let selectedSkillID: String
+        let weakness: WeaknessAssessment
+        let blockSummaries: [PracticeBlockSummaryRecord]
+        let runtimeBlocks: [PracticeBlockResult]
+    }
+
+    fileprivate struct PracticeInputEvent {
+        enum Kind {
+            case character
+            case backspace
+        }
+
+        let timestamp: Date
+        let kind: Kind
+        let character: Character?
+        let promptText: String
+        let promptIndexBeforeInput: Int
+        let typedTextBeforeInput: String
+    }
+
+    fileprivate struct RuntimeBlockState {
         let block: PracticeBlock
         let prompts: [PracticePrompt]
+        let selectedSkillID: String
+        let weakness: WeaknessAssessment
         var currentPromptIndex: Int = 0
         var typedText: String = ""
         var remainingSeconds: Int
@@ -13,6 +38,7 @@ final class PracticeRuntimeEngine {
         var correctCharacterCount: Int = 0
         var incorrectCharacterCount: Int = 0
         var backspaceCount: Int = 0
+        var inputEvents: [PracticeInputEvent] = []
 
         var activePrompt: PracticePrompt? {
             guard !prompts.isEmpty else { return nil }
@@ -27,11 +53,13 @@ final class PracticeRuntimeEngine {
     }
 
     private struct RuntimeSessionState {
+        let startedAt: Date
         let plan: PracticeSessionPlan
-        let laterTransferNote: String?
+        let weakness: WeaknessAssessment
         var interactiveBlocks: [RuntimeBlockState]
         var activeBlockIndex: Int = 0
         var completedBlocks: [PracticeBlockResult] = []
+        var completedBlockSummaries: [PracticeBlockSummaryRecord] = []
         var status: PracticeRuntimeStatus = .running
         var note: String = "Type inside the focus pad. Prompt text stays transient and is never persisted."
     }
@@ -71,28 +99,36 @@ final class PracticeRuntimeEngine {
             backspaceCount: activeBlock?.backspaceCount ?? 0,
             completedBlocks: session.completedBlocks,
             followUp: session.plan.followUp,
-            laterTransferNote: session.laterTransferNote,
+            passiveTransferNote: session.plan.passiveTransferNote,
             note: session.note,
             requiresAppFocus: session.status == .running
         )
     }
 
     func start(plan: PracticeSessionPlan, weakness: WeaknessAssessment?) {
-        let laterTransferNote = plan.blocks.first(where: { $0.kind == .transferCheck })?.detail
+        guard let weakness else {
+            session = nil
+            return
+        }
+
+        let selectedSkillID = weakness.targetSkillIDs.first ?? "unknownSkill"
         let interactiveBlocks = plan.blocks
             .filter { $0.durationSeconds > 0 }
             .map { block in
                 RuntimeBlockState(
                     block: block,
                     prompts: Self.prompts(for: block, weakness: weakness),
+                    selectedSkillID: selectedSkillID,
+                    weakness: weakness,
                     remainingSeconds: block.durationSeconds
                 )
             }
 
         guard !interactiveBlocks.isEmpty else {
             session = RuntimeSessionState(
+                startedAt: Date(),
                 plan: plan,
-                laterTransferNote: laterTransferNote,
+                weakness: weakness,
                 interactiveBlocks: [],
                 status: .completed,
                 note: "This recommendation does not contain an interactive block yet."
@@ -101,8 +137,9 @@ final class PracticeRuntimeEngine {
         }
 
         session = RuntimeSessionState(
+            startedAt: Date(),
             plan: plan,
-            laterTransferNote: laterTransferNote,
+            weakness: weakness,
             interactiveBlocks: interactiveBlocks,
             status: .running,
             note: "Type inside the focus pad. Prompt text stays transient and is never persisted."
@@ -127,19 +164,20 @@ final class PracticeRuntimeEngine {
         self.session = session
     }
 
-    func cancel() {
-        guard var session else { return }
+    func cancel() -> CompletedSessionArtifact? {
+        guard var session else { return nil }
         if activeBlockState(in: session) != nil {
             appendCurrentBlockResult(to: &session, noteSuffix: "Ended before the timer finished.")
         }
         session.status = .canceled
         session.note = "Practice session canceled. Prompt text was transient and was not saved."
         self.session = session
+        return makeCompletedArtifact(from: session)
     }
 
-    func tick() {
-        guard var session, session.status == .running else { return }
-        guard session.activeBlockIndex < session.interactiveBlocks.count else { return }
+    func tick() -> CompletedSessionArtifact? {
+        guard var session, session.status == .running else { return nil }
+        guard session.activeBlockIndex < session.interactiveBlocks.count else { return nil }
 
         session.interactiveBlocks[session.activeBlockIndex].elapsedSeconds += 1
         if session.interactiveBlocks[session.activeBlockIndex].remainingSeconds > 0 {
@@ -153,14 +191,16 @@ final class PracticeRuntimeEngine {
         }
 
         self.session = session
+        return session.status == .completed ? makeCompletedArtifact(from: session) : nil
     }
 
-    func advanceBlock() {
-        guard var session else { return }
-        guard activeBlockState(in: session) != nil else { return }
+    func advanceBlock() -> CompletedSessionArtifact? {
+        guard var session else { return nil }
+        guard activeBlockState(in: session) != nil else { return nil }
         appendCurrentBlockResult(to: &session, noteSuffix: "Advanced manually.")
         moveToNextBlockOrComplete(session: &session)
         self.session = session
+        return session.status == .completed ? makeCompletedArtifact(from: session) : nil
     }
 
     func skipPrompt() {
@@ -182,6 +222,16 @@ final class PracticeRuntimeEngine {
             guard block.typedText.count < promptCharacters.count else { return }
 
             let nextIndex = block.typedText.count
+            block.inputEvents.append(
+                PracticeInputEvent(
+                    timestamp: Date(),
+                    kind: .character,
+                    character: normalizedCharacter,
+                    promptText: activePrompt,
+                    promptIndexBeforeInput: nextIndex,
+                    typedTextBeforeInput: block.typedText
+                )
+            )
             block.typedText.append(normalizedCharacter)
 
             if promptCharacters[nextIndex] == normalizedCharacter {
@@ -201,6 +251,16 @@ final class PracticeRuntimeEngine {
     func handleBackspace() {
         mutateActiveBlock { block in
             guard !block.typedText.isEmpty else { return }
+            block.inputEvents.append(
+                PracticeInputEvent(
+                    timestamp: Date(),
+                    kind: .backspace,
+                    character: nil,
+                    promptText: block.activePrompt?.text.lowercased() ?? "",
+                    promptIndexBeforeInput: block.typedText.count,
+                    typedTextBeforeInput: block.typedText
+                )
+            )
             block.backspaceCount += 1
             block.typedText.removeLast()
         }
@@ -227,6 +287,11 @@ final class PracticeRuntimeEngine {
         let baseNote = blockNote(for: block.block, family: family)
         let note = [baseNote, noteSuffix].compactMap { $0 }.joined(separator: " ")
 
+        let blockSummary = Self.buildBlockSummary(
+            from: block,
+            blockIndex: session.activeBlockIndex
+        )
+
         session.completedBlocks.append(
             PracticeBlockResult(
                 title: block.block.title,
@@ -240,6 +305,7 @@ final class PracticeRuntimeEngine {
                 note: note
             )
         )
+        session.completedBlockSummaries.append(blockSummary)
     }
 
     private func moveToNextBlockOrComplete(session: inout RuntimeSessionState) {
@@ -266,7 +332,7 @@ final class PracticeRuntimeEngine {
                 ?? .mixedTransfer
         case .postCheck:
             return .mixedTransfer
-        case .transferCheck:
+        case .nearTransferCheck:
             return .mixedTransfer
         case .drill:
             return block.drillFamily
@@ -282,8 +348,8 @@ final class PracticeRuntimeEngine {
             return "Drill block using \(familyNote.lowercased())."
         case .postCheck:
             return "Immediate post-check using mixed transfer material."
-        case .transferCheck:
-            return "Later transfer check."
+        case .nearTransferCheck:
+            return "Near-transfer check using adjacent material."
         }
     }
 
@@ -325,8 +391,8 @@ final class PracticeRuntimeEngine {
             "Stay smooth. Prioritize clean reps over raw speed."
         case .postCheck:
             "Notice whether the pattern feels easier without extra corrections."
-        case .transferCheck:
-            "Later passive transfer check."
+        case .nearTransferCheck:
+            "Notice whether gains hold on nearby but less rehearsed material."
         }
 
         let family = resolvedFamily(for: block, weakness: weakness)
@@ -359,7 +425,7 @@ final class PracticeRuntimeEngine {
             return weakness?.recommendedDrill ?? .mixedTransfer
         case .postCheck:
             return .mixedTransfer
-        case .transferCheck:
+        case .nearTransferCheck:
             return .mixedTransfer
         case .drill:
             return weakness?.recommendedDrill ?? .mixedTransfer
@@ -372,7 +438,7 @@ final class PracticeRuntimeEngine {
             return ["asdf fdsa", "sdfg gfds", "hjkl lkjh", "jklh hljk"]
         case .postCheck:
             return ["asdf fjfj", "hjkl dkdk", "sdfg slsl", "jklh thth"]
-        case .transferCheck:
+        case .nearTransferCheck:
             return ["asdf fjfj"]
         case .drill:
             return [
@@ -392,7 +458,7 @@ final class PracticeRuntimeEngine {
             return ["aqa aza aqa", "frf tft frf", "olo plp olo", "iki uku iki"]
         case .postCheck:
             return ["aqa fjfj", "frf dkdk", "olo slsl", "iki thth"]
-        case .transferCheck:
+        case .nearTransferCheck:
             return ["aqa frf olo"]
         case .drill:
             return [
@@ -412,7 +478,7 @@ final class PracticeRuntimeEngine {
             return ["fjfj fjfj", "dkdk dkdk", "slsl slsl", "thth thth"]
         case .postCheck:
             return ["fjfj asdf", "dkdk qaqa", "slsl olo", "thth calm"]
-        case .transferCheck:
+        case .nearTransferCheck:
             return ["fjfj dkdk slsl"]
         case .drill:
             return [
@@ -432,7 +498,7 @@ final class PracticeRuntimeEngine {
             return ["safe safe", "calm calm", "clean clean", "steady steady"]
         case .postCheck:
             return ["safe fjfj", "calm dkdk", "clean olo", "steady frf"]
-        case .transferCheck:
+        case .nearTransferCheck:
             return ["safe calm steady"]
         case .drill:
             return [
@@ -452,7 +518,7 @@ final class PracticeRuntimeEngine {
             return ["steady flow", "smooth reset", "easy pace", "soft rhythm"]
         case .postCheck:
             return ["steady fjfj", "smooth dkdk", "easy safe", "soft calm"]
-        case .transferCheck:
+        case .nearTransferCheck:
             return ["steady flow easy pace"]
         case .drill:
             return [
@@ -472,7 +538,7 @@ final class PracticeRuntimeEngine {
             return ["asdf fjfj", "aqa dkdk", "safe olo", "steady thth"]
         case .postCheck:
             return ["asdf fjfj aqa", "dkdk safe olo", "slsl calm frf", "hjkl thth steady"]
-        case .transferCheck:
+        case .nearTransferCheck:
             return ["asdf fjfj aqa", "dkdk safe olo"]
         case .drill:
             return [
@@ -484,5 +550,263 @@ final class PracticeRuntimeEngine {
                 "olo dkdk clean"
             ]
         }
+    }
+
+    private func makeCompletedArtifact(from session: RuntimeSessionState) -> CompletedSessionArtifact {
+        CompletedSessionArtifact(
+            startedAt: session.startedAt,
+            endedAt: Date(),
+            selectedSkillID: session.weakness.targetSkillIDs.first ?? "unknownSkill",
+            weakness: session.weakness,
+            blockSummaries: session.completedBlockSummaries,
+            runtimeBlocks: session.completedBlocks
+        )
+    }
+
+    private static func buildBlockSummary(
+        from block: RuntimeBlockState,
+        blockIndex: Int
+    ) -> PracticeBlockSummaryRecord {
+        let promptLengths = block.prompts.map { $0.text.count }
+        let charsPresented = (block.completedPromptCount * (promptLengths.first ?? 0)) + (block.activePrompt?.text.count ?? 0)
+        let activeTypingMilliseconds: Int = {
+            guard let first = block.inputEvents.first?.timestamp,
+                  let last = block.inputEvents.last?.timestamp else {
+                return 0
+            }
+            return max(Int(last.timeIntervalSince(first) * 1_000), 0)
+        }()
+
+        let metrics = PracticeBlockAnalyzer.metrics(for: block)
+        let descriptor = PracticeBlockAnalyzer.assessmentDescriptor(for: block)
+        let sufficiencyStatus: PracticeSufficiencyStatus = metrics.contains(where: { $0.sampleCount >= 8 }) ? .sufficient : .insufficient
+        let errorEpisodes = PracticeBlockAnalyzer.errorEpisodes(for: block)
+
+        return PracticeBlockSummaryRecord(
+            blockIndex: blockIndex,
+            title: block.block.title,
+            role: block.block.kind,
+            skillID: block.selectedSkillID,
+            weakness: block.weakness.category,
+            assessmentBlueprintDescriptor: descriptor,
+            durationMilliseconds: block.elapsedSeconds * 1_000,
+            activeTypingMilliseconds: activeTypingMilliseconds,
+            charsPresented: charsPresented,
+            charsEntered: block.correctCharacterCount + block.incorrectCharacterCount,
+            correctChars: block.correctCharacterCount,
+            incorrectChars: block.incorrectCharacterCount,
+            correctedErrorEpisodeCount: errorEpisodes.corrected,
+            uncorrectedErrorEpisodeCount: errorEpisodes.uncorrected,
+            backspaceTapCount: block.backspaceCount,
+            heldDeleteEpisodeCount: 0,
+            promptsCompleted: block.completedPromptCount,
+            sufficiencyStatus: sufficiencyStatus,
+            metrics: metrics
+        )
+    }
+}
+
+private enum PracticeBlockAnalyzer {
+    private struct EpisodeSummary {
+        var corrected = 0
+        var uncorrected = 0
+        var recoveryLatencies: [Double] = []
+    }
+
+    private struct SampledTransition {
+        let milliseconds: Double
+        let pattern: HandTransitionPattern
+        let distance: DistanceBucket
+    }
+
+    private static let keyCodeByCharacter: [Character: Int64] = [
+        "a": 0, "b": 11, "c": 8, "d": 2, "e": 14, "f": 3, "g": 5, "h": 4, "i": 34,
+        "j": 38, "k": 40, "l": 37, "m": 46, "n": 45, "o": 31, "p": 35, "q": 12,
+        "r": 15, "s": 1, "t": 17, "u": 32, "v": 9, "w": 13, "x": 7, "y": 16,
+        "z": 6, " ": 49
+    ]
+
+    static func metrics(for block: PracticeRuntimeEngine.RuntimeBlockState) -> [PracticeBlockMetricSnapshot] {
+        let transitions = sampledTransitions(for: block)
+        let allFlights = transitions.map(\.milliseconds)
+        let sameHandFlights = transitions.filter { $0.pattern == .sameHand }.map(\.milliseconds)
+        let crossHandFlights = transitions.filter { $0.pattern == .crossHand }.map(\.milliseconds)
+        let farFlights = transitions.filter { $0.distance == .far }.map(\.milliseconds)
+        let nearFlights = transitions.filter { $0.distance == .near || $0.distance == .medium }.map(\.milliseconds)
+        let charsEntered = block.correctCharacterCount + block.incorrectCharacterCount
+        let elapsedSeconds = max(Double(block.elapsedSeconds), 1)
+        let errorRate = charsEntered > 0 ? Double(block.incorrectCharacterCount) / Double(charsEntered) : 0
+        let charsPerSecond = Double(block.correctCharacterCount) / elapsedSeconds
+        let episodeSummary = summarizeEpisodes(for: block)
+
+        return [
+            metric("flightMedianMs", cohort: "overall", samples: allFlights, direction: .lowerIsBetter),
+            metric("cadenceIQRMs", cohort: "overall", samples: allFlights, useDispersion: true, direction: .lowerIsBetter),
+            metric("flightMedianMs", cohort: "sameHand", samples: sameHandFlights, direction: .lowerIsBetter),
+            metric("flightMedianMs", cohort: "crossHand", samples: crossHandFlights, direction: .lowerIsBetter),
+            metric("flightMedianMs", cohort: "farDistance", samples: farFlights, direction: .lowerIsBetter),
+            metric("flightMedianMs", cohort: "nearDistance", samples: nearFlights, direction: .lowerIsBetter),
+            PracticeBlockMetricSnapshot(
+                metricKey: "incorrectRate",
+                cohortKey: "overall",
+                sampleCount: charsEntered,
+                scalarValue: charsEntered > 0 ? errorRate : nil,
+                numerator: Double(block.incorrectCharacterCount),
+                denominator: Double(charsEntered),
+                betterDirection: .lowerIsBetter
+            ),
+            PracticeBlockMetricSnapshot(
+                metricKey: "charsPerSecond",
+                cohortKey: "overall",
+                sampleCount: block.correctCharacterCount,
+                scalarValue: charsPerSecond,
+                numerator: Double(block.correctCharacterCount),
+                denominator: elapsedSeconds,
+                betterDirection: .higherIsBetter
+            ),
+            metric("recoveryLatencyMedianMs", cohort: "correctionEpisode", samples: episodeSummary.recoveryLatencies, direction: .lowerIsBetter),
+            PracticeBlockMetricSnapshot(
+                metricKey: "correctedErrorEpisodeCount",
+                cohortKey: "overall",
+                sampleCount: episodeSummary.corrected + episodeSummary.uncorrected,
+                scalarValue: Double(episodeSummary.corrected),
+                numerator: Double(episodeSummary.corrected),
+                denominator: Double(episodeSummary.corrected + episodeSummary.uncorrected),
+                betterDirection: .higherIsBetter
+            )
+        ].filter { $0.scalarValue != nil || $0.dispersionValue != nil || $0.sampleCount > 0 }
+    }
+
+    static func assessmentDescriptor(for block: PracticeRuntimeEngine.RuntimeBlockState) -> String {
+        let promptLengths = block.prompts.map { $0.text.count }
+        let averageLength = promptLengths.isEmpty ? 0 : promptLengths.reduce(0, +) / promptLengths.count
+        let transitions = sampledTransitions(for: block)
+        let sameHandCount = transitions.filter { $0.pattern == .sameHand }.count
+        let crossHandCount = transitions.filter { $0.pattern == .crossHand }.count
+        let farCount = transitions.filter { $0.distance == .far }.count
+        let nearCount = transitions.filter { $0.distance == .near || $0.distance == .medium }.count
+        return "family=\(block.weakness.recommendedDrill.rawValue); prompts=\(block.prompts.count); avgPromptLength=\(averageLength); sameHand=\(sameHandCount); crossHand=\(crossHandCount); near=\(nearCount); far=\(farCount)"
+    }
+
+    static func errorEpisodes(for block: PracticeRuntimeEngine.RuntimeBlockState) -> (corrected: Int, uncorrected: Int) {
+        let summary = summarizeEpisodes(for: block)
+        return (summary.corrected, summary.uncorrected)
+    }
+
+    private static func summarizeEpisodes(for block: PracticeRuntimeEngine.RuntimeBlockState) -> EpisodeSummary {
+        var summary = EpisodeSummary()
+        var episodeStart: Date?
+        var sawBackspace = false
+
+        for event in block.inputEvents {
+            switch event.kind {
+            case .character:
+                guard let character = event.character else { continue }
+                let promptCharacters = Array(event.promptText)
+                guard event.promptIndexBeforeInput < promptCharacters.count else { continue }
+                let expected = promptCharacters[event.promptIndexBeforeInput]
+                let onCorrectPathBeforeInput = isPrefix(event.typedTextBeforeInput, of: event.promptText)
+                if character != expected {
+                    if episodeStart == nil {
+                        episodeStart = event.timestamp
+                    }
+                    sawBackspace = false
+                } else if let activeEpisodeStart = episodeStart,
+                          sawBackspace,
+                          onCorrectPathBeforeInput {
+                    summary.recoveryLatencies.append(event.timestamp.timeIntervalSince(activeEpisodeStart) * 1_000)
+                    summary.corrected += 1
+                    sawBackspace = false
+                    episodeStart = nil
+                }
+            case .backspace:
+                if episodeStart != nil {
+                    sawBackspace = true
+                }
+            }
+        }
+
+        if episodeStart != nil {
+            summary.uncorrected += 1
+        }
+
+        summary.recoveryLatencies = summary.recoveryLatencies.filter { $0 >= 0 }
+        return summary
+    }
+
+    private static func sampledTransitions(for block: PracticeRuntimeEngine.RuntimeBlockState) -> [SampledTransition] {
+        var transitions: [SampledTransition] = []
+        var previousCorrectCharacter: Character?
+        var previousCorrectTimestamp: Date?
+
+        for event in block.inputEvents {
+            guard case .character = event.kind,
+                  let character = event.character else { continue }
+            let promptCharacters = Array(event.promptText)
+            guard event.promptIndexBeforeInput < promptCharacters.count else { continue }
+            let expected = promptCharacters[event.promptIndexBeforeInput]
+            guard character == expected else { continue }
+
+            if let previousCorrectCharacter,
+               let previousCorrectTimestamp,
+               let firstKeyCode = keyCodeByCharacter[previousCorrectCharacter],
+               let secondKeyCode = keyCodeByCharacter[character] {
+                let milliseconds = event.timestamp.timeIntervalSince(previousCorrectTimestamp) * 1_000
+                if milliseconds >= 0, milliseconds <= 2_500 {
+                    transitions.append(
+                        SampledTransition(
+                            milliseconds: milliseconds,
+                            pattern: KeyGeometryMap.handPattern(from: firstKeyCode, to: secondKeyCode),
+                            distance: KeyGeometryMap.distanceBucket(from: firstKeyCode, to: secondKeyCode)
+                        )
+                    )
+                }
+            }
+
+            previousCorrectCharacter = character
+            previousCorrectTimestamp = event.timestamp
+        }
+
+        return transitions
+    }
+
+    private static func metric(
+        _ key: String,
+        cohort: String,
+        samples: [Double],
+        useDispersion: Bool = false,
+        direction: PracticeMetricDirection
+    ) -> PracticeBlockMetricSnapshot {
+        let sorted = samples.sorted()
+        let scalarValue = useDispersion ? iqr(of: sorted) : median(of: sorted)
+        return PracticeBlockMetricSnapshot(
+            metricKey: key,
+            cohortKey: cohort,
+            sampleCount: samples.count,
+            scalarValue: scalarValue,
+            dispersionValue: useDispersion ? scalarValue : iqr(of: sorted),
+            betterDirection: direction
+        )
+    }
+
+    private static func median(of values: [Double]) -> Double? {
+        guard !values.isEmpty else { return nil }
+        let middle = values.count / 2
+        if values.count.isMultiple(of: 2) {
+            return (values[middle - 1] + values[middle]) / 2
+        }
+        return values[middle]
+    }
+
+    private static func iqr(of values: [Double]) -> Double? {
+        guard values.count >= 4 else { return nil }
+        let q1Index = Int(Double(values.count - 1) * 0.25)
+        let q3Index = Int(Double(values.count - 1) * 0.75)
+        return values[q3Index] - values[q1Index]
+    }
+
+    private static func isPrefix(_ typedText: String, of promptText: String) -> Bool {
+        guard typedText.count <= promptText.count else { return false }
+        return promptText.prefix(typedText.count) == typedText[typedText.startIndex..<typedText.endIndex]
     }
 }
